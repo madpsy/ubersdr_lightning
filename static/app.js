@@ -49,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
   actCanvas.addEventListener('mouseleave', () => { tooltip.className = ''; });
 
   loadHistory();
+  loadSpectrum();
   connect();
   initReceiverMap();
   setInterval(drawActivity, 1000);
@@ -156,11 +157,15 @@ function drawSpectrum(bins, meta) {
   ctx.stroke();
 
   // ── Notable frequency markers ──
+  // Centre frequency is derived from the spectrum metadata (midpoint of band),
+  // so it correctly reflects any CENTRE_HZ override.
+  const centreFreq = meta ? Math.round((meta.freqStart + meta.freqEnd) / 2) : 25000;
+  const centreKHz  = (centreFreq / 1000).toFixed(0);
   const markers = [
-    { f: 10000, label: '10k', color: 'rgba(167,139,250,0.6)' },
-    { f: 20000, label: '20k', color: 'rgba(167,139,250,0.6)' },
-    { f: 25000, label: '25k\n(centre)', color: 'rgba(245,200,66,0.8)' },
-    { f: 30000, label: '30k', color: 'rgba(167,139,250,0.6)' },
+    { f: 10000,      label: '10k',                    color: 'rgba(167,139,250,0.6)' },
+    { f: 20000,      label: '20k',                    color: 'rgba(167,139,250,0.6)' },
+    { f: centreFreq, label: centreKHz + 'k (centre)', color: 'rgba(245,200,66,0.8)' },
+    { f: 30000,      label: '30k',                    color: 'rgba(167,139,250,0.6)' },
   ];
   markers.forEach(({ f, label, color }) => {
     if (f < freqStart || f > freqEnd) return;
@@ -392,6 +397,28 @@ async function loadHistory() {
     if (!Array.isArray(data) || data.length === 0) return;
     // data is oldest-first; process oldest first so newest ends up at top
     data.forEach(s => onStrike(s, false));
+  } catch(_) {}
+}
+
+// Fetch the latest spectrum immediately on page load so the chart shows
+// straight away rather than waiting up to 5 s for the first SSE frame.
+// The REST endpoint returns plain float32 JSON array (not base64).
+async function loadSpectrum() {
+  try {
+    const resp = await fetch(BASE + '/api/spectrum');
+    if (!resp.ok) return;
+    const msg = await resp.json();
+    if (!msg.bins || !Array.isArray(msg.bins) || msg.bins.length === 0) return;
+    const bins = new Float32Array(msg.bins);
+    lastSpectrumBins = bins;
+    lastSpectrumMeta = {
+      freqStart: msg.freq_start_hz,
+      freqEnd:   msg.freq_end_hz,
+      binWidth:  msg.bin_width_hz,
+    };
+    requestAnimationFrame(() => drawSpectrum(bins, lastSpectrumMeta));
+    const badge = document.getElementById('spectrum-badge');
+    if (badge) badge.textContent = 'loaded';
   } catch(_) {}
 }
 
