@@ -69,13 +69,15 @@ Then access the web UI at: `http://your-ubersdr-host/addon/lightning/`
 
 All settings are environment variables (set in `docker-compose.yml`):
 
-| Variable          | Default                      | Description |
-|-------------------|------------------------------|-------------|
-| `UBERSDR_URL`     | `ws://ubersdr:8080/ws`       | UberSDR WebSocket URL |
-| `WEB_PORT`        | `6097`                       | HTTP listen port |
-| `CENTRE_HZ`       | `25000`                      | IQ centre frequency in Hz (25 kHz centre → 1–49 kHz at ±24 kHz IQ BW) |
-| `IIR_ALPHA`       | `0.9999`                     | IIR noise floor tracking speed (higher = slower, ~2 s time constant) |
-| `THRESHOLD_RATIO` | `4.0`                        | Trigger threshold: envelope > noise × ratio (4.0 = 12 dB above noise) |
+| Variable              | Default                | Description |
+|-----------------------|------------------------|-------------|
+| `UBERSDR_URL`         | `ws://ubersdr:8080/ws` | UberSDR WebSocket URL |
+| `WEB_PORT`            | `6097`                 | HTTP listen port |
+| `CENTRE_HZ`           | `25000`                | IQ centre frequency in Hz (25 kHz → covers 1–49 kHz at ±24 kHz IQ BW) |
+| `IIR_ALPHA`           | `0.9999`               | IIR noise floor tracking speed (higher = slower, ~2 s time constant) |
+| `THRESHOLD_RATIO`     | `8.0`                  | Trigger threshold: envelope > noise × ratio (8.0 = 18 dB above noise). Raise to 10–12 in noisy RF environments. |
+| `REFRACTORY_MS`       | `100`                  | Milliseconds to ignore new triggers after a confirmed strike |
+| `MAX_STRIKES_PER_MIN` | `20`                   | Rate limit: suppress triggers if more than this many strikes/minute |
 
 ---
 
@@ -109,14 +111,59 @@ State machine:
 
 ## API
 
-| Endpoint              | Method | Description |
-|-----------------------|--------|-------------|
-| `/`                   | GET    | Web UI (index.html) |
-| `/api/events`         | GET    | SSE stream of live strikes |
-| `/api/strikes?n=N`    | GET    | JSON array of last N strikes (includes waveforms) |
-| `/api/status`         | GET    | JSON: strike count + server time |
+| Endpoint                                  | Method | Description |
+|-------------------------------------------|--------|-------------|
+| `/`                                       | GET    | Web UI (index.html) |
+| `/api/events`                             | GET    | SSE stream: full StrikeEvents + spectrum + waveform frames |
+| `/api/events?minimal=1`                   | GET    | SSE stream: compact strike-only events (no spectrum/waveform) |
+| `/api/strikes`                            | GET    | JSON array of last 100 strikes (includes waveforms, ~750 KB) |
+| `/api/strikes?n=N`                        | GET    | JSON array of last N strikes (max 1000) |
+| `/api/strikes?since=5m`                   | GET    | Strikes in the last 5 minutes |
+| `/api/strikes?since=1h&n=200`             | GET    | Up to 200 strikes in the last hour |
+| `/api/strikes?minimal=1`                  | GET    | Last 100 strikes, **no waveforms** (~150 bytes each) |
+| `/api/strikes?since=5m&minimal=1`         | GET    | Last 5 min, no waveforms — lightweight polling |
+| `/api/spectrum`                           | GET    | JSON: latest FFT spectrum (4096 bins, dBFS, 1–49 kHz) |
+| `/api/status`                             | GET    | JSON: strike count + server time |
 
-### StrikeEvent JSON
+### `?since` duration format
+
+Accepts Go duration syntax: `5m`, `1h`, `30s`, `2h30m`, `90s` etc.
+
+### Full SSE stream (`/api/events`)
+
+Four event types are broadcast:
+
+1. **Unnamed message** (`onmessage`) — strike metadata (~150 bytes, no waveform)
+2. **`event: waveform`** — `{"id":"...","waveform":[...960 floats...]}` for the waveform gallery
+3. **`event: spectrum`** — FFT spectrum frame every 5 s (base64 float32 array, 4096 bins)
+4. **`event: connected`** / **`event: heartbeat`** — connection lifecycle
+
+### Minimal SSE stream (`/api/events?minimal=1`)
+
+For external clients, scripts, and IoT devices. Only compact strike messages are sent — no spectrum, no waveform, no named events except heartbeat.
+
+```
+data: {"time":"15:30:00.123","peak_amplitude":0.4231,"snr_db":14.3,"duration_ms":3.25,"noise_floor":0.00812,"saturated":false}
+```
+
+**Example — Python client:**
+```python
+import sseclient, requests
+
+resp = requests.get('http://localhost:6097/api/events?minimal=1', stream=True)
+for event in sseclient.SSEClient(resp):
+    if event.data and event.data != '{}':
+        import json
+        strike = json.loads(event.data)
+        print(f"{strike['time']}  SNR {strike['snr_db']:.1f} dB  {strike['duration_ms']:.2f} ms")
+```
+
+**Example — curl:**
+```bash
+curl -N 'http://localhost:6097/api/events?minimal=1'
+```
+
+### StrikeEvent JSON (full, from `/api/strikes`)
 
 ```json
 {
@@ -129,11 +176,24 @@ State machine:
   "snr_db":           14.3,
   "duration_samples": 156,
   "duration_ms":      3.25,
+  "saturated":        false,
   "waveform":         [0.001, 0.003, ...]
 }
 ```
 
 > **Note**: `waveform` is omitted from SSE metadata messages (sent as a separate `event: waveform` SSE event) but included in `GET /api/strikes` responses.
+
+### Spectrum JSON (from `/api/spectrum`)
+
+```json
+{
+  "bins":          [-85.2, -83.1, ...],
+  "bin_count":     4096,
+  "freq_start_hz": 1000.0,
+  "freq_end_hz":   48988.3,
+  "bin_width_hz":  11.71875
+}
+```
 
 ---
 

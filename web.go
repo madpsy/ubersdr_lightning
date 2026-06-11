@@ -2,12 +2,17 @@
 //
 // Endpoints:
 //
-//	GET  /              → static/index.html (rendered as Go template with BasePath)
-//	GET  /static/*      → embedded static files
-//	GET  /api/strikes   → JSON array of recent strikes (query: ?n=100)
-//	GET  /api/spectrum  → JSON: latest FFT spectrum (2048 bins, dBFS, 1–49 kHz)
-//	GET  /api/status    → JSON status (strike count, server time)
-//	GET  /api/events    → SSE stream of live StrikeEvents + spectrum frames
+//	GET  /                        → static/index.html (rendered as Go template with BasePath)
+//	GET  /static/*                → embedded static files
+//	GET  /api/strikes?n=N         → JSON array of recent strikes (includes waveforms)
+//	GET  /api/spectrum            → JSON: latest FFT spectrum (4096 bins, dBFS, 1–49 kHz)
+//	GET  /api/status              → JSON status (strike count, server time)
+//	GET  /api/events              → SSE stream: full StrikeEvents + spectrum + waveform frames
+//	GET  /api/events?minimal=1    → SSE stream: compact strike-only events, no spectrum/waveform
+//
+// Minimal SSE format (one unnamed message per strike):
+//
+//	data: {"time":"15:04:05.000","peak_amplitude":0.4231,"snr_db":14.3,"duration_ms":3.25,"noise_floor":0.00812,"saturated":false}
 //
 // When running behind UberSDR's addon proxy the proxy sets the
 // X-Forwarded-Prefix header (e.g. "/addons/lightning").  index.html is
@@ -74,7 +79,22 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		indexTmpl.Execute(w, map[string]string{"BasePath": bp}) //nolint:errcheck
 	})
 
-	// GET /api/strikes?n=100
+	// GET /api/strikes[?n=N][&since=D][&minimal=1]
+	//
+	// ?n=N        — return at most N most recent strikes (default 100, max 1000)
+	// ?since=D    — only return strikes within the past D (Go duration: 5m, 1h, 30s)
+	//               Can be combined with ?n: the result is the intersection.
+	// ?minimal=1  — strip the waveform field from each strike (~7.5 KB each).
+	//               Use this for lightweight polling clients that don't need
+	//               the raw waveform data for TDOA cross-correlation.
+	//
+	// Examples:
+	//   /api/strikes                        → last 100 strikes (with waveforms)
+	//   /api/strikes?n=50                   → last 50 strikes (with waveforms)
+	//   /api/strikes?since=5m               → all strikes in the last 5 minutes
+	//   /api/strikes?since=1h&n=200         → up to 200 strikes in the last hour
+	//   /api/strikes?minimal=1              → last 100 strikes, no waveforms (~150 bytes each)
+	//   /api/strikes?since=5m&minimal=1     → last 5 min, no waveforms
 	mux.HandleFunc("/api/strikes", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -83,13 +103,51 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		n := 100
 		if s := r.URL.Query().Get("n"); s != "" {
 			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				if v > 1000 {
+					v = 1000
+				}
 				n = v
 			}
 		}
+
+		// Optional time filter: ?since=5m / 1h / 30s / 2h30m
+		var sinceNs int64
+		if s := r.URL.Query().Get("since"); s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				http.Error(w, "invalid since parameter (use Go duration: 5m, 1h, 30s)", http.StatusBadRequest)
+				return
+			}
+			sinceNs = time.Now().Add(-d).UnixNano()
+		}
+
+		minimal := r.URL.Query().Get("minimal") == "1"
+
 		strikes := history.Recent(n)
 		if strikes == nil {
 			strikes = []StrikeEvent{}
 		}
+
+		// Apply time filter if requested
+		if sinceNs > 0 {
+			filtered := strikes[:0]
+			for _, s := range strikes {
+				if s.TimestampNs >= sinceNs {
+					filtered = append(filtered, s)
+				}
+			}
+			strikes = filtered
+		}
+
+		// Strip waveforms if minimal mode requested
+		if minimal {
+			stripped := make([]StrikeEvent, len(strikes))
+			for i, s := range strikes {
+				stripped[i] = s.stripWaveform()
+			}
+			strikes = stripped
+		}
+
 		jsonResponse(w, strikes)
 	})
 
@@ -129,13 +187,27 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		})
 	})
 
-	// GET /api/events — SSE stream of live StrikeEvents
+	// GET /api/events[?minimal=1] — SSE stream of live StrikeEvents
+	//
+	// Without ?minimal=1 (default / web UI):
+	//   - unnamed message: full StrikeEvent JSON (no waveform)
+	//   - event: waveform — {id, waveform} for gallery
+	//   - event: spectrum — FFT spectrum frame every 5 s
+	//   - event: connected / heartbeat
+	//
+	// With ?minimal=1 (external clients, scripts, IoT):
+	//   - unnamed message only: compact JSON with time, peak_amplitude,
+	//     snr_db, duration_ms, noise_floor, saturated
+	//   - spectrum and waveform events are suppressed
+	//   - heartbeat is still sent every 15 s
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "SSE not supported", http.StatusInternalServerError)
 			return
 		}
+
+		minimal := r.URL.Query().Get("minimal") == "1"
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -155,7 +227,11 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
-		log.Printf("[sse] client connected: %s", r.RemoteAddr)
+		mode := "full"
+		if minimal {
+			mode = "minimal"
+		}
+		log.Printf("[sse] client connected (%s): %s", mode, r.RemoteAddr)
 		defer log.Printf("[sse] client disconnected: %s", r.RemoteAddr)
 
 		for {
@@ -165,6 +241,19 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 			case msg, ok := <-ch:
 				if !ok {
 					return
+				}
+				if minimal {
+					// In minimal mode: only forward unnamed strike messages.
+					// Skip event: spectrum, event: waveform, event: connected.
+					// Unnamed SSE messages start with "data: " (no "event:" line).
+					if !isUnnamedSSEMessage(msg) {
+						continue
+					}
+					// Reformat to compact minimal struct
+					msg = toMinimalSSE(msg)
+					if msg == "" {
+						continue
+					}
 				}
 				fmt.Fprint(w, msg)
 				flusher.Flush()
@@ -177,6 +266,55 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 
 	log.Printf("[web] listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+// isUnnamedSSEMessage returns true if msg is an unnamed SSE message
+// (i.e. starts with "data: " rather than "event: ...").
+// Named events (spectrum, waveform, connected, heartbeat) start with "event:".
+func isUnnamedSSEMessage(msg string) bool {
+	return len(msg) > 6 && msg[:6] == "data: "
+}
+
+// toMinimalSSE parses a full StrikeEvent SSE message and returns a compact
+// minimal SSE message containing only the fields useful for external clients.
+// Returns "" if the message cannot be parsed.
+func toMinimalSSE(msg string) string {
+	// Strip the "data: " prefix and trailing "\n\n"
+	const prefix = "data: "
+	if len(msg) < len(prefix) {
+		return ""
+	}
+	jsonStr := strings.TrimRight(msg[len(prefix):], "\n")
+
+	var s StrikeEvent
+	if err := json.Unmarshal([]byte(jsonStr), &s); err != nil {
+		return ""
+	}
+
+	type minimalStrike struct {
+		Time          string  `json:"time"`           // HH:MM:SS.mmm UTC
+		PeakAmplitude float64 `json:"peak_amplitude"`
+		SNRdB         float64 `json:"snr_db"`
+		DurationMs    float64 `json:"duration_ms"`
+		NoiseFloor    float64 `json:"noise_floor"`
+		Saturated     bool    `json:"saturated"`
+	}
+
+	t := time.Unix(0, s.TimestampNs).UTC()
+	m := minimalStrike{
+		Time:          fmt.Sprintf("%02d:%02d:%02d.%03d", t.Hour(), t.Minute(), t.Second(), t.Nanosecond()/1_000_000),
+		PeakAmplitude: s.PeakAmplitude,
+		SNRdB:         s.SNRdB,
+		DurationMs:    s.DurationMs,
+		NoiseFloor:    s.NoiseFloor,
+		Saturated:     s.Saturated,
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("data: %s\n\n", data)
 }
 
 // jsonResponse writes v as JSON with Content-Type application/json.

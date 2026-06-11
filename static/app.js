@@ -231,6 +231,86 @@ function onSpectrumHover(e) {
   tooltip.className   = 'show';
 }
 
+// ── API documentation modal ────────────────────────────────────────────────
+function openApiModal() {
+  const base = window.location.origin + (typeof BASE_PATH !== 'undefined' ? BASE_PATH : '');
+
+  const sections = [
+    {
+      title: 'Server-Sent Events (SSE)',
+      rows: [
+        {
+          badge: 'sse', method: 'GET', path: '/api/events',
+          desc: 'Full live strike stream. Named events: <span class="hl">connected</span>, <span class="hl">heartbeat</span> (30 s), <span class="hl">waveform</span> (strike + waveform array), <span class="hl">spectrum</span> (VLF snapshot every ~5 s).',
+          example: `curl -N "${base}/api/events"`,
+          response: `event: waveform\ndata: {"time":"14:23:01.456","peak_amplitude":0.42,"snr_db":18.3,"duration_ms":3.1,"noise_floor":0.023,"saturated":false,"waveform":[...]}\n\nevent: spectrum\ndata: {"bins":[...],"bin_bw_hz":46.875,"center_hz":20000,"sample_rate":48000,"timestamp_ns":1718123456789}`
+        },
+        {
+          badge: 'sse', method: 'GET', path: '/api/events?minimal=1',
+          desc: 'Compact strike-only stream. Strips spectrum and waveform data. Emits plain <span class="hl">data:</span> lines only — no named events. Ideal for low-bandwidth clients.',
+          example: `curl -N "${base}/api/events?minimal=1"`,
+          response: `data: {"time":"14:23:01.456","peak_amplitude":0.42,"snr_db":18.3,"duration_ms":3.1,"noise_floor":0.023,"saturated":false}`
+        }
+      ]
+    },
+    {
+      title: 'REST Endpoints',
+      rows: [
+        {
+          badge: 'get', method: 'GET', path: '/api/strikes',
+          desc: 'Last N strikes (ring-buffer), newest first. Each entry is a full StrikeEvent including the waveform array (~7.5 KB/strike).',
+          example: `curl "${base}/api/strikes"`,
+          response: `[{"timestamp_ns":1718123456789,"time":"14:23:01.456","peak_amplitude":0.42,"snr_db":18.3,\n  "duration_ms":3.1,"noise_floor":0.023,"saturated":false,"waveform":[...]}]`
+        },
+        {
+          badge: 'get', method: 'GET', path: '/api/strikes?since=5m',
+          desc: 'Limit to strikes within the past duration. Uses Go time.ParseDuration syntax: <span class="hl">30s</span>, <span class="hl">5m</span>, <span class="hl">1h</span>, <span class="hl">2h30m</span>.',
+          example: `curl "${base}/api/strikes?since=5m"`,
+          response: `[/* strikes from the last 5 minutes */]`
+        },
+        {
+          badge: 'get', method: 'GET', path: '/api/strikes?minimal=1',
+          desc: 'Strips the <span class="hl">waveform</span> field, reducing payload from ~7.5 KB to ~150 bytes per strike. Combinable: <span class="hl">?since=1h&amp;minimal=1</span>.',
+          example: `curl "${base}/api/strikes?minimal=1&since=1h"`,
+          response: `[{"timestamp_ns":1718123456789,"time":"14:23:01.456","peak_amplitude":0.42,"snr_db":18.3,\n  "duration_ms":3.1,"noise_floor":0.023,"saturated":false}]`
+        },
+        {
+          badge: 'get', method: 'GET', path: '/api/spectrum',
+          desc: 'Latest VLF spectrum snapshot. <span class="hl">bins</span> is an array of dBFS values (FFT size / 2 elements). <span class="hl">bin_bw_hz</span> is the bandwidth per bin.',
+          example: `curl "${base}/api/spectrum"`,
+          response: `{"bins":[-82.3,-79.1,...],"bin_bw_hz":46.875,"center_hz":20000,"sample_rate":48000,"timestamp_ns":1718123456789}`
+        },
+        {
+          badge: 'get', method: 'GET', path: '/api/status',
+          desc: 'Detector status: connection state, noise floor, threshold, strike count, and uptime.',
+          example: `curl "${base}/api/status"`,
+          response: `{"connected":true,"noise_floor":0.023,"threshold":0.184,"strike_count":42,"uptime_s":3600}`
+        }
+      ]
+    }
+  ];
+
+  let html = '';
+  for (const sec of sections) {
+    html += `<h3>${sec.title}</h3>`;
+    for (const row of sec.rows) {
+      html += `
+        <p><span class="badge b-${row.badge}">${row.method}</span>
+           <span class="hl" style="font-family:var(--mono);font-size:12px">${row.path}</span></p>
+        <p>${row.desc}</p>
+        <pre>${row.example}</pre>
+        <pre>${row.response}</pre>`;
+    }
+  }
+
+  document.getElementById('api-body').innerHTML = html;
+  document.getElementById('api-overlay').classList.add('open');
+}
+
+function closeApiModal() {
+  document.getElementById('api-overlay').classList.remove('open');
+}
+
 // ── Receiver map ───────────────────────────────────────────────────────────
 // Fetch /api/description from the root of the domain (not the addon base path)
 // to get the receiver's lat/lon and display a small Leaflet map.
