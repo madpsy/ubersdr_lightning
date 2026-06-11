@@ -192,11 +192,15 @@ function updateLatest(s) {
 
   if (s.waveform && s.waveform.length > 0) {
     html += `<div class="wf-label">Waveform (±10 ms)</div>
-             <canvas id="waveform-canvas" width="280" height="72"></canvas>`;
+             <canvas id="waveform-canvas" width="560" height="144"></canvas>`;
   }
   latestInner.innerHTML = html;
   if (s.waveform && s.waveform.length > 0) {
-    drawWaveformCanvas(document.getElementById('waveform-canvas'), s.waveform, true);
+    // Defer draw until after layout so canvas.offsetWidth is valid
+    requestAnimationFrame(() => {
+      const c = document.getElementById('waveform-canvas');
+      if (c) drawWaveformCanvas(c, s.waveform, true);
+    });
   }
 }
 
@@ -244,33 +248,53 @@ function drawWaveformCanvas(canvas, waveform, showMarker) {
 
 // ── Gallery ────────────────────────────────────────────────────────────────
 function addGalleryEntry(s) {
-  if (!s.waveform || s.waveform.length === 0) return;
+  // Always add the strike to the gallery array so the waveform SSE event
+  // can find it by ID and attach the waveform later.
+  // If the strike already has a waveform (from history load), draw immediately.
   gallery.unshift(s);
   if (gallery.length > MAX_GALLERY) gallery.pop();
-  rebuildGallery();
+  // Only rebuild if we have at least one waveform to show
+  if (gallery.some(g => g.waveform && g.waveform.length > 0)) {
+    rebuildGallery();
+  }
 }
 
 function rebuildGallery() {
-  if (gallery.length === 0) {
+  // Only show entries that have a waveform
+  const withWaveform = gallery.filter(s => s.waveform && s.waveform.length > 0);
+
+  if (withWaveform.length === 0) {
     galleryInner.innerHTML = '<div class="gallery-empty">No waveforms yet</div>';
     galleryCount.textContent = '0';
     return;
   }
-  galleryCount.textContent = gallery.length;
+  galleryCount.textContent = withWaveform.length;
   galleryInner.innerHTML = '';
-  gallery.forEach(s => {
+
+  // Build all thumb divs first, append them all, then draw after a single
+  // rAF so the browser has performed layout and canvas pixel size is valid.
+  const thumbs = withWaveform.map(s => {
     const div = document.createElement('div');
     div.className = 'wf-thumb';
     const ts = new Date(s.timestamp_ns / 1e6).toISOString().slice(11, 23);
     const db = (s.snr_db || 0).toFixed(1);
-    div.innerHTML = `<canvas width="120" height="44"></canvas>
+    // Use 2× pixel dimensions for crisp rendering on HiDPI screens.
+    // CSS width:100% scales it down visually.
+    div.innerHTML = `<canvas width="240" height="88"></canvas>
       <div class="wf-meta">
         <span>${ts}</span>
         <span class="snr-val">${db} dB</span>
       </div>`;
     div.addEventListener('click', () => updateLatest(s));
     galleryInner.appendChild(div);
-    drawWaveformCanvas(div.querySelector('canvas'), s.waveform, false);
+    return { canvas: div.querySelector('canvas'), waveform: s.waveform };
+  });
+
+  // Defer drawing until after layout so canvas dimensions are resolved
+  requestAnimationFrame(() => {
+    thumbs.forEach(({ canvas, waveform }) => {
+      drawWaveformCanvas(canvas, waveform, false);
+    });
   });
 }
 
