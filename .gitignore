@@ -1,0 +1,14 @@
+# Compiled binary
+ubersdr_lightning
+
+# Data directory
+/data/
+lightning_data/
+
+# Docker build artifacts
+*.tmp
+
+# Editor
+.vscode/
+*.swp
+*~
