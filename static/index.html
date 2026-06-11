@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>⚡ UberSDR Lightning</title>
   <script>window.BASE_PATH = "{{.BasePath}}";</script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -155,6 +157,23 @@
     td.ts-col { color: var(--muted); } td.seq-col { color: var(--dim); }
     .no-data { text-align: center; color: var(--muted); font-style: italic; padding: 28px; }
 
+    /* ── Receiver map ── */
+    #map-card { flex-shrink: 0; }
+    #receiver-map { height: 160px; width: 100%; }
+    /* Dark Leaflet overrides */
+    .leaflet-container { background: var(--bg2) !important; }
+    .leaflet-tile-pane { filter: brightness(0.7) saturate(0.6) hue-rotate(180deg) invert(1); }
+    .leaflet-control-attribution { background: rgba(13,21,32,0.8) !important; color: var(--muted) !important; font-size: 9px !important; }
+    .leaflet-control-attribution a { color: var(--dim) !important; }
+    .leaflet-control-zoom a { background: var(--surface2) !important; color: var(--text) !important; border-color: var(--border2) !important; }
+    .leaflet-popup-content-wrapper { background: var(--surface2); color: var(--text); border: 1px solid var(--border2); border-radius: 6px; box-shadow: var(--shadow); }
+    .leaflet-popup-tip { background: var(--surface2); }
+    .leaflet-popup-content { font-family: var(--font); font-size: 12px; margin: 8px 12px; }
+    .leaflet-popup-content strong { color: var(--gold); }
+    .map-info { padding: 8px 14px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); display: flex; gap: 12px; flex-wrap: wrap; }
+    .map-info span { white-space: nowrap; }
+    .map-info .val { color: var(--text); font-family: var(--mono); }
+
     /* ── Tooltip ── */
     #tooltip { position: fixed; z-index: 200; background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; padding: 6px 10px; font-size: 11px; font-family: var(--mono); color: var(--text); pointer-events: none; opacity: 0; transition: opacity 0.15s; white-space: nowrap; }
     #tooltip.show { opacity: 1; }
@@ -227,6 +246,18 @@
       </div>
       <div id="gallery-inner"><div class="gallery-empty">No waveforms yet</div></div>
     </div>
+
+    <!-- Receiver location map -->
+    <div class="card" id="map-card">
+      <div class="card-hdr"><span class="icon">📍</span> Receiver Location</div>
+      <div id="receiver-map"></div>
+      <div class="map-info" id="map-info" style="display:none">
+        <span><span class="val" id="map-callsign">—</span></span>
+        <span><span class="val" id="map-grid">—</span></span>
+        <span id="map-location" style="color:var(--muted)"></span>
+      </div>
+    </div>
+
   </div>
 
   <!-- Strike log table -->

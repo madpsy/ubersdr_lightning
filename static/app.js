@@ -8,8 +8,9 @@ const ACTIVITY_S  = 60;
 let totalStrikes = 0;
 let tableRows    = 0;
 let bestSNRdB    = -Infinity;
-const actBuf     = [];  // {ts:Date, snrDB:number}
-const gallery    = [];  // StrikeEvent[] newest-first
+const actBuf     = [];       // {ts:Date, snrDB:number}
+const gallery    = [];       // StrikeEvent[] newest-first
+const seenIds    = new Set(); // deduplication: strike IDs already processed
 
 // DOM refs (populated after DOMContentLoaded)
 let connPill, connLabel, hdrTotal, hdrRate;
@@ -45,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadHistory();
   connect();
+  initReceiverMap();
   setInterval(drawActivity, 1000);
   setInterval(() => {
     const rate = calcRate();
@@ -53,17 +55,102 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 5000);
 });
 
+// ── Receiver map ───────────────────────────────────────────────────────────
+// Fetch /api/description from the root of the domain (not the addon base path)
+// to get the receiver's lat/lon and display a small Leaflet map.
+async function initReceiverMap() {
+  try {
+    // /api/description is on the UberSDR root, not the addon prefix
+    const resp = await fetch('/api/description');
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    const rx  = data.receiver;
+    const gps = rx && rx.gps;
+    if (!gps || !gps.lat || !gps.lon) return;
+
+    const lat  = gps.lat;
+    const lon  = gps.lon;
+    const call = rx.callsign || '';
+    const grid = gps.maidenhead || '';
+    const loc  = rx.location || '';
+    const name = rx.name || '';
+
+    // Show info bar
+    const mapInfo = document.getElementById('map-info');
+    if (mapInfo) {
+      mapInfo.style.display = 'flex';
+      const cs = document.getElementById('map-callsign');
+      const gr = document.getElementById('map-grid');
+      const lo = document.getElementById('map-location');
+      if (cs) cs.textContent = call;
+      if (gr) gr.textContent = grid;
+      if (lo) lo.textContent = loc;
+    }
+
+    // Initialise Leaflet map
+    const map = L.map('receiver-map', {
+      center: [lat, lon],
+      zoom: 8,
+      zoomControl: true,
+      attributionControl: true,
+      scrollWheelZoom: false,
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 18,
+    }).addTo(map);
+
+    // Custom gold marker
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        width:14px;height:14px;
+        background:#f5c842;
+        border:2px solid #fff;
+        border-radius:50%;
+        box-shadow:0 0 8px rgba(245,200,66,0.8);
+      "></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+      popupAnchor: [0, -10],
+    });
+
+    const popupHtml = `<strong>${call}</strong>${grid ? ' · ' + grid : ''}<br>
+      ${name ? name + '<br>' : ''}
+      ${loc}<br>
+      <span style="color:#6b7f99;font-size:10px">${lat.toFixed(4)}°, ${lon.toFixed(4)}°</span>`;
+
+    L.marker([lat, lon], { icon })
+      .addTo(map)
+      .bindPopup(popupHtml)
+      .openPopup();
+
+  } catch(_) {
+    // Map is non-critical — silently ignore errors
+  }
+}
+
 // ── SSE ────────────────────────────────────────────────────────────────────
 // pendingWaveforms holds waveform data for live strikes that arrived before
 // the waveform SSE event was processed (race-free merge by strike ID).
 const pendingWaveforms = new Map(); // id → waveform []
 
 function connect() {
+  let firstConnect = true;
   const es = new EventSource(BASE + '/api/events');
 
   es.addEventListener('connected', () => {
     connPill.className = 'conn-pill connected';
     connLabel.textContent = 'live';
+    if (!firstConnect) {
+      // Reconnected after a drop — backfill any strikes missed during the gap.
+      // loadHistory fetches the last 100 strikes; onStrike deduplicates by
+      // checking if the strike ID is already in the gallery array.
+      loadHistory();
+    }
+    firstConnect = false;
   });
 
   es.addEventListener('heartbeat', () => {});
@@ -122,6 +209,17 @@ async function loadHistory() {
 
 // ── Strike handler ─────────────────────────────────────────────────────────
 function onStrike(s, live) {
+  // Deduplicate: skip strikes we've already processed (e.g. from reconnect
+  // history backfill overlapping with live SSE events).
+  if (s.id && seenIds.has(s.id)) return;
+  if (s.id) {
+    seenIds.add(s.id);
+    // Keep seenIds bounded — remove oldest entries beyond 2000
+    if (seenIds.size > 2000) {
+      seenIds.delete(seenIds.values().next().value);
+    }
+  }
+
   totalStrikes++;
   const db = s.snr_db || 0;
   if (db > bestSNRdB) bestSNRdB = db;
