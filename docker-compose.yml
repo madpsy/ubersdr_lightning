@@ -8,14 +8,22 @@ services:
       # UberSDR WebSocket URL
       UBERSDR_URL: "ws://ubersdr:8080/ws"
       #
-      # IQ centre frequency in Hz (default: 20000 — covers ~10–44 kHz VLF sferic band)
-      # CENTRE_HZ: "20000"
+      # IQ centre frequency in Hz (default: 25000 — covers 1–49 kHz VLF sferic band)
+      # CENTRE_HZ: "25000"
       #
       # IIR noise floor alpha (default: 0.9999 — ~2 s time constant at 48 kHz)
       # IIR_ALPHA: "0.9999"
       #
-      # Trigger threshold ratio (default: 2.0 — 6 dB above noise floor)
-      # THRESHOLD_RATIO: "2.0"
+      # Trigger threshold ratio (default: 8.0 — 18 dB above noise floor).
+      # Raise to 10–12 if false triggers persist in noisy RF environments.
+      # THRESHOLD_RATIO: "8.0"
+      #
+      # Refractory period in ms after each confirmed strike (default: 100).
+      # Prevents burst interference from generating multiple events.
+      # REFRACTORY_MS: "100"
+      #
+      # Rate limit: max strikes per minute before suppression (default: 20).
+      # MAX_STRIKES_PER_MIN: "20"
       #
       # Web UI port (default: 6097)
       # WEB_PORT: "6097"

@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -56,11 +57,13 @@ func envIntOr(key string, def int) int {
 
 func main() {
 	var (
-		ubersdrURL     = flag.String("url", envOr("UBERSDR_URL", "ws://ubersdr:8080/ws"), "UberSDR WebSocket URL (env: UBERSDR_URL)")
-		listenAddr     = flag.String("listen", ":"+envOr("WEB_PORT", "6097"), "HTTP listen address (env: WEB_PORT)")
-		centreHz       = flag.Int("centre-hz", envIntOr("CENTRE_HZ", iqCentreHz), "IQ centre frequency in Hz (env: CENTRE_HZ)")
-		iirAlpha       = flag.Float64("iir-alpha", envFloat64Or("IIR_ALPHA", defaultIIRAlpha), "IIR noise floor alpha 0.99–0.99999 (env: IIR_ALPHA)")
-		thresholdRatio = flag.Float64("threshold", envFloat64Or("THRESHOLD_RATIO", defaultThresholdRatio), "Trigger threshold ratio (env: THRESHOLD_RATIO)")
+		ubersdrURL       = flag.String("url", envOr("UBERSDR_URL", "ws://ubersdr:8080/ws"), "UberSDR WebSocket URL (env: UBERSDR_URL)")
+		listenAddr       = flag.String("listen", ":"+envOr("WEB_PORT", "6097"), "HTTP listen address (env: WEB_PORT)")
+		centreHz         = flag.Int("centre-hz", envIntOr("CENTRE_HZ", iqCentreHz), "IQ centre frequency in Hz (env: CENTRE_HZ)")
+		iirAlpha         = flag.Float64("iir-alpha", envFloat64Or("IIR_ALPHA", defaultIIRAlpha), "IIR noise floor alpha 0.99–0.99999 (env: IIR_ALPHA)")
+		thresholdRatio   = flag.Float64("threshold", envFloat64Or("THRESHOLD_RATIO", defaultThresholdRatio), "Trigger threshold ratio — 8.0 = 18 dB above noise floor (env: THRESHOLD_RATIO)")
+		refractoryMs     = flag.Int("refractory-ms", envIntOr("REFRACTORY_MS", defaultRefractoryMs), "Refractory period in ms after each strike (env: REFRACTORY_MS)")
+		maxStrikesPerMin = flag.Int("max-strikes-per-min", envIntOr("MAX_STRIKES_PER_MIN", defaultMaxStrikesPerMin), "Rate limit: max strikes per minute before suppression (env: MAX_STRIKES_PER_MIN)")
 	)
 	flag.Parse()
 
@@ -71,11 +74,13 @@ func main() {
 	}
 
 	log.Printf("[main] ubersdr_lightning starting")
-	log.Printf("[main] UberSDR URL     : %s", *ubersdrURL)
-	log.Printf("[main] Listen addr     : %s", *listenAddr)
-	log.Printf("[main] Centre freq     : %d Hz", *centreHz)
-	log.Printf("[main] IIR alpha       : %.5f", *iirAlpha)
-	log.Printf("[main] Threshold ratio : ×%.2f", *thresholdRatio)
+	log.Printf("[main] UberSDR URL       : %s", *ubersdrURL)
+	log.Printf("[main] Listen addr       : %s", *listenAddr)
+	log.Printf("[main] Centre freq       : %d Hz", *centreHz)
+	log.Printf("[main] IIR alpha         : %.5f", *iirAlpha)
+	log.Printf("[main] Threshold ratio   : ×%.2f (%.1f dB)", *thresholdRatio, 20*math.Log10(*thresholdRatio))
+	log.Printf("[main] Refractory period : %d ms", *refractoryMs)
+	log.Printf("[main] Max strikes/min   : %d", *maxStrikesPerMin)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -97,10 +102,12 @@ func main() {
 
 	// Lightning detector
 	cfg := DetectorConfig{
-		UberSDRURL:     *ubersdrURL,
-		CentreHz:       *centreHz,
-		IIRAlpha:       *iirAlpha,
-		ThresholdRatio: *thresholdRatio,
+		UberSDRURL:       *ubersdrURL,
+		CentreHz:         *centreHz,
+		IIRAlpha:         *iirAlpha,
+		ThresholdRatio:   *thresholdRatio,
+		RefractoryMs:     *refractoryMs,
+		MaxStrikesPerMin: *maxStrikesPerMin,
 	}
 	det := NewLightningDetector(cfg, history, strikeOut, specAnalyser)
 	go det.Run(ctx)

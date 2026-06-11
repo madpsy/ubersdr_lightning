@@ -61,13 +61,27 @@ const (
 	defaultIIRAlpha = 0.9999
 
 	// Threshold: trigger when envelope > noiseFloor × ratio.
-	// 4.0 = 12 dB above noise floor — conservative enough to reject most
-	// 50/60 Hz interference transients while still catching real sferics.
-	defaultThresholdRatio = 4.0
+	// 8.0 = 18 dB above noise floor.  Real sferics from distant lightning
+	// easily exceed this; most local interference (switching supplies, LED
+	// drivers, motors) does not.  Raise further if false triggers persist.
+	defaultThresholdRatio = 8.0
 
 	// Sferic duration gates (samples at 48 kHz)
-	minSfericSamples = 24  // 0.5 ms
+	// Minimum 1 ms (48 samples) — rejects very short noise spikes.
+	// Real sferics are typically 1–5 ms; the 10 ms maximum catches the
+	// longer tail of close strikes.
+	minSfericSamples = 48  // 1.0 ms (was 24 = 0.5 ms)
 	maxSfericSamples = 480 // 10 ms
+
+	// Refractory period: after a confirmed strike, ignore new triggers for
+	// this many milliseconds.  Real lightning at a single station cannot
+	// produce two sferics within ~50 ms; this rejects burst interference.
+	defaultRefractoryMs = 100 // milliseconds
+
+	// Rate limiter: maximum strikes per minute before the detector logs a
+	// warning and suppresses further triggers until the rate drops.
+	// 20/min = one every 3 s on average — generous for active storms.
+	defaultMaxStrikesPerMin = 20
 
 	// Single-peak validation: the envelope must fall back below
 	// peakAmplitude × peakDecayRatio before the end of the armed window.
@@ -212,8 +226,18 @@ type DetectorConfig struct {
 	// Higher = slower tracking. Range: 0.99–0.99999.
 	IIRAlpha float64
 
-	// ThresholdRatio: trigger when envelope > noiseFloor × ratio (default: 4.0).
+	// ThresholdRatio: trigger when envelope > noiseFloor × ratio (default: 8.0).
+	// 8.0 = 18 dB above noise floor. Raise further if false triggers persist.
 	ThresholdRatio float64
+
+	// RefractoryMs: milliseconds to ignore new triggers after a confirmed strike.
+	// Prevents burst interference from generating multiple events. (default: 100 ms)
+	RefractoryMs int
+
+	// MaxStrikesPerMin: rate limiter — if more than this many strikes are
+	// detected per minute, further triggers are suppressed and a warning is
+	// logged until the rate drops. (default: 20)
+	MaxStrikesPerMin int
 }
 
 // LightningDetector connects to UberSDR in iq48 mode and detects sferics.
@@ -241,6 +265,12 @@ func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut 
 	}
 	if cfg.ThresholdRatio == 0 {
 		cfg.ThresholdRatio = defaultThresholdRatio
+	}
+	if cfg.RefractoryMs == 0 {
+		cfg.RefractoryMs = defaultRefractoryMs
+	}
+	if cfg.MaxStrikesPerMin == 0 {
+		cfg.MaxStrikesPerMin = defaultMaxStrikesPerMin
 	}
 	return &LightningDetector{
 		cfg:          cfg,
@@ -385,6 +415,16 @@ func (ld *LightningDetector) runDetectionLoop(
 	)
 	state := stateIdle
 
+	// Refractory period: nanosecond timestamp of the last confirmed strike.
+	// New triggers are ignored until refractoryNs has elapsed.
+	refractoryNs := int64(ld.cfg.RefractoryMs) * 1_000_000
+	var lastStrikeTs int64 // GPS ns of last emitted strike (0 = none yet)
+
+	// Rate limiter: sliding window of strike timestamps (last 60 s).
+	// If len(recentStrikes) > MaxStrikesPerMin, suppress and warn.
+	recentStrikes := make([]int64, 0, ld.cfg.MaxStrikesPerMin*2)
+	rateLimited := false
+
 	var (
 		trigPeak      float64   // peak envelope during armed state
 		trigPeakTs    int64     // GPS timestamp of peak sample
@@ -514,31 +554,70 @@ func (ld *LightningDetector) runDetectionLoop(
 					}
 
 				case stateCapture:
-					postCapBuf = append(postCapBuf, e)
-					postCapLeft--
-					if postCapLeft <= 0 || i == nSamples-1 {
-						// Emit strike event
-						strike := ld.buildStrike(
-							trigPeakTs, trigPeak, noiseFloor, trigDuration,
-							trigSaturated,
-							preTrig, preTrigIdx, preTrigTs,
-							postCapBuf,
-						)
-						ld.history.Add(strike)
-						select {
-						case ld.strikeOut <- strike:
-						default:
-							// SSE hub full — drop (non-blocking)
+						postCapBuf = append(postCapBuf, e)
+						postCapLeft--
+						if postCapLeft <= 0 || i == nSamples-1 {
+							// ── Refractory period check ──────────────────────────
+							// Reject if we're still within refractoryNs of the last
+							// confirmed strike.  This prevents burst interference
+							// from generating multiple events.
+							if lastStrikeTs > 0 && trigPeakTs-lastStrikeTs < refractoryNs {
+								log.Printf("[lightning] refractory: skipping trigger %.2fms after last strike",
+									float64(trigPeakTs-lastStrikeTs)/1e6)
+								state = stateIdle
+								trigDuration = 0
+								break
+							}
+	
+							// ── Rate limiter ─────────────────────────────────────
+							// Prune strikes older than 60 s from the sliding window.
+							cutoff := trigPeakTs - 60_000_000_000
+							j := 0
+							for j < len(recentStrikes) && recentStrikes[j] < cutoff {
+								j++
+							}
+							recentStrikes = recentStrikes[j:]
+	
+							if len(recentStrikes) >= ld.cfg.MaxStrikesPerMin {
+								if !rateLimited {
+									log.Printf("[lightning] rate limit: >%d strikes/min — suppressing triggers",
+										ld.cfg.MaxStrikesPerMin)
+									rateLimited = true
+								}
+								state = stateIdle
+								trigDuration = 0
+								break
+							}
+							if rateLimited {
+								log.Printf("[lightning] rate limit cleared")
+								rateLimited = false
+							}
+	
+							// ── Emit strike event ─────────────────────────────────
+							strike := ld.buildStrike(
+								trigPeakTs, trigPeak, noiseFloor, trigDuration,
+								trigSaturated,
+								preTrig, preTrigIdx, preTrigTs,
+								postCapBuf,
+							)
+							lastStrikeTs = trigPeakTs
+							recentStrikes = append(recentStrikes, trigPeakTs)
+	
+							ld.history.Add(strike)
+							select {
+							case ld.strikeOut <- strike:
+							default:
+								// SSE hub full — drop (non-blocking)
+							}
+							satTag := ""
+							if strike.Saturated {
+								satTag = " [SATURATED — ADC clipping]"
+							}
+							log.Printf("[lightning] strike detected: ts=%d peak=%.4f snr=%.1fdB dur=%.2fms%s",
+								strike.TimestampNs, strike.PeakAmplitude, strike.SNRdB, strike.DurationMs, satTag)
+							state = stateIdle
+							trigDuration = 0
 						}
-						satTag := ""
-						if strike.Saturated {
-							satTag = " [SATURATED — ADC clipping]"
-						}
-						log.Printf("[lightning] strike detected: ts=%d peak=%.4f snr=%.1fdB dur=%.2fms%s",
-							strike.TimestampNs, strike.PeakAmplitude, strike.SNRdB, strike.DurationMs, satTag)
-						state = stateIdle
-						trigDuration = 0
-					}
 				}
 			}
 		}
