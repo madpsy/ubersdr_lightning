@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ UberSDR Lightning</title>
+  <script>window.BASE_PATH = "{{.BasePath}}";</script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #080c12;
+      --bg2:      #0d1520;
+      --surface:  #111827;
+      --surface2: #1a2436;
+      --border:   #1e2d42;
+      --border2:  #2a3f5a;
+      --text:     #e2eaf4;
+      --muted:    #6b7f99;
+      --dim:      #3a4f6a;
+      --gold:     #f5c842;
+      --gold2:    #ffd966;
+      --orange:   #ff8c42;
+      --red:      #ff4d6d;
+      --green:    #22d3a0;
+      --blue:     #38bdf8;
+      --purple:   #a78bfa;
+      --font:     'Segoe UI', system-ui, -apple-system, sans-serif;
+      --mono:     'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      --radius:   10px;
+      --shadow:   0 4px 24px rgba(0,0,0,0.5);
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.5; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg2); }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+    /* ── Header ── */
+    header {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(8,12,18,0.92); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px; height: 52px;
+      display: flex; align-items: center; gap: 16px;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+    .logo-bolt { font-size: 22px; filter: drop-shadow(0 0 8px var(--gold)); animation: bolt-idle 4s ease-in-out infinite; }
+    @keyframes bolt-idle {
+      0%,100% { filter: drop-shadow(0 0 6px var(--gold)); }
+      50%      { filter: drop-shadow(0 0 16px var(--gold2)); }
+    }
+    .logo span { color: var(--gold); }
+    .conn-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 20px;
+      border: 1px solid var(--border2); background: var(--surface);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+      transition: all 0.3s;
+    }
+    .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background 0.3s; }
+    .conn-pill.connected    { border-color: var(--green); color: var(--green); }
+    .conn-pill.connected .conn-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .conn-pill.disconnected { border-color: var(--red); color: var(--red); }
+    .conn-pill.disconnected .conn-dot { background: var(--red); }
+    .hdr-spacer { flex: 1; }
+    .stat-pill { display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; background: var(--surface2); border: 1px solid var(--border); font-size: 12px; }
+    .stat-pill .lbl { color: var(--muted); }
+    .stat-pill .val { color: var(--gold); font-weight: 700; font-family: var(--mono); }
+
+    /* ── Flash overlay ── */
+    #flash-overlay { position: fixed; inset: 0; z-index: 999; pointer-events: none; opacity: 0; }
+    #flash-overlay.flash { animation: strike-flash 0.7s ease-out forwards; }
+    @keyframes strike-flash {
+      0%   { opacity: 0.22; background: radial-gradient(ellipse at 50% 20%, #fffbe0 0%, #f5c842 25%, #ff8c42 55%, transparent 75%); }
+      20%  { opacity: 0.14; }
+      60%  { opacity: 0.05; }
+      100% { opacity: 0; }
+    }
+
+    /* ── Page layout ── */
+    .page {
+      display: grid;
+      grid-template-columns: 1fr 310px;
+      grid-template-rows: auto auto 1fr;
+      gap: 14px; padding: 14px;
+      max-width: 1440px; margin: 0 auto;
+    }
+
+    /* ── Cards ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+    .card-hdr {
+      padding: 9px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+    }
+    .card-hdr .icon { font-size: 14px; }
+    .card-hdr .badge { margin-left: auto; background: var(--surface2); border: 1px solid var(--border2); border-radius: 10px; padding: 1px 8px; font-size: 10px; color: var(--dim); }
+
+    /* ── Stats row ── */
+    .stats-row { grid-column: 1 / 2; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+    .stat-card .s-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+    .stat-card .s-value { font-size: 28px; font-weight: 800; font-family: var(--mono); color: var(--text); line-height: 1; }
+    .stat-card .s-sub { font-size: 11px; color: var(--dim); }
+    .stat-card.c-gold   { border-color: rgba(245,200,66,0.3); } .stat-card.c-gold   .s-value { color: var(--gold); }
+    .stat-card.c-green  { border-color: rgba(34,211,160,0.3); } .stat-card.c-green  .s-value { color: var(--green); }
+    .stat-card.c-blue   { border-color: rgba(56,189,248,0.3); } .stat-card.c-blue   .s-value { color: var(--blue); }
+    .stat-card.c-purple { border-color: rgba(167,139,250,0.3); } .stat-card.c-purple .s-value { color: var(--purple); }
+
+    /* ── Activity canvas ── */
+    #activity-card { grid-column: 1 / 2; }
+    #activity-canvas { width: 100%; height: 90px; display: block; cursor: crosshair; }
+
+    /* ── Right panel ── */
+    .right-panel { grid-column: 2 / 3; grid-row: 1 / 5; display: flex; flex-direction: column; gap: 14px; }
+
+    /* ── Latest strike ── */
+    #latest-inner { padding: 14px; }
+    .latest-empty { color: var(--muted); font-style: italic; text-align: center; padding: 28px 0; font-size: 12px; }
+    .latest-ts { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .latest-ts strong { color: var(--gold); font-size: 13px; }
+    .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .kv { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; }
+    .kv .k { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .kv .v { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--text); margin-top: 2px; }
+    .kv.hi .v { color: var(--gold); }
+    .kv.snr-hi .v { color: var(--red); } .kv.snr-med .v { color: var(--orange); } .kv.snr-lo .v { color: var(--green); }
+    .snr-bar-wrap { margin-bottom: 10px; }
+    .snr-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+    .snr-bar-track { height: 6px; background: var(--bg2); border-radius: 3px; overflow: hidden; }
+    .snr-bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--green), var(--gold), var(--red)); transition: width 0.4s ease; }
+    .wf-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+    #waveform-canvas { width: 100%; height: 72px; display: block; border-radius: 6px; background: var(--bg2); border: 1px solid var(--border); }
+
+    /* ── Waveform gallery ── */
+    #gallery-card { flex: 1; min-height: 0; }
+    #gallery-inner { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; overflow-y: auto; max-height: 320px; }
+    .wf-thumb { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 6px; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
+    .wf-thumb:hover { border-color: var(--gold); box-shadow: 0 0 8px rgba(245,200,66,0.2); }
+    .wf-thumb canvas { width: 100%; height: 44px; display: block; }
+    .wf-thumb .wf-meta { font-size: 9px; color: var(--muted); margin-top: 4px; font-family: var(--mono); display: flex; justify-content: space-between; }
+    .wf-thumb .wf-meta .snr-val { color: var(--gold); }
+    .gallery-empty { grid-column: 1 / 3; text-align: center; color: var(--muted); font-style: italic; padding: 20px 0; font-size: 11px; }
+
+    /* ── Strike table ── */
+    #table-card { grid-column: 1 / 2; }
+    #table-wrap { overflow-y: auto; max-height: 380px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    thead th { position: sticky; top: 0; background: var(--surface); padding: 8px 10px; text-align: left; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid rgba(30,45,66,0.6); transition: background 0.15s; }
+    tbody tr:hover { background: rgba(255,255,255,0.025); }
+    tbody tr.new-row { animation: row-flash 0.8s ease-out; }
+    @keyframes row-flash { 0% { background: rgba(245,200,66,0.15); } 100% { background: transparent; } }
+    td { padding: 6px 10px; font-family: var(--mono); white-space: nowrap; }
+    td.snr-hi { color: var(--red); } td.snr-med { color: var(--orange); } td.snr-lo { color: var(--green); }
+    td.ts-col { color: var(--muted); } td.seq-col { color: var(--dim); }
+    .no-data { text-align: center; color: var(--muted); font-style: italic; padding: 28px; }
+
+    /* ── Tooltip ── */
+    #tooltip { position: fixed; z-index: 200; background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; padding: 6px 10px; font-size: 11px; font-family: var(--mono); color: var(--text); pointer-events: none; opacity: 0; transition: opacity 0.15s; white-space: nowrap; }
+    #tooltip.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div id="flash-overlay"></div>
+<div id="tooltip"></div>
+
+<header>
+  <div class="logo">
+    <span class="logo-bolt">⚡</span>
+    UberSDR <span>&nbsp;Lightning</span>
+  </div>
+  <div class="conn-pill disconnected" id="conn-pill">
+    <div class="conn-dot"></div>
+    <span id="conn-label">connecting…</span>
+  </div>
+  <div class="hdr-spacer"></div>
+  <div class="stat-pill"><span class="lbl">Total</span><span class="val" id="hdr-total">0</span></div>
+  <div class="stat-pill"><span class="lbl">Rate</span><span class="val" id="hdr-rate">0</span><span class="lbl">/min</span></div>
+</header>
+
+<div class="page">
+
+  <!-- Stats row -->
+  <div class="stats-row">
+    <div class="stat-card c-gold">
+      <div class="s-label">Total Strikes</div>
+      <div class="s-value" id="stat-total">0</div>
+      <div class="s-sub">since page load</div>
+    </div>
+    <div class="stat-card c-green">
+      <div class="s-label">Last Strike</div>
+      <div class="s-value" id="stat-last">—</div>
+      <div class="s-sub" id="stat-last-sub">no strikes yet</div>
+    </div>
+    <div class="stat-card c-blue">
+      <div class="s-label">Best SNR</div>
+      <div class="s-value" id="stat-snr">—</div>
+      <div class="s-sub">dB (session)</div>
+    </div>
+    <div class="stat-card c-purple">
+      <div class="s-label">Rate</div>
+      <div class="s-value" id="stat-rate">0</div>
+      <div class="s-sub">strikes / min (60 s)</div>
+    </div>
+  </div>
+
+  <!-- Activity timeline -->
+  <div class="card" id="activity-card">
+    <div class="card-hdr">
+      <span class="icon">📊</span> Strike Activity
+      <span class="badge">60 s window · hover for details</span>
+    </div>
+    <canvas id="activity-canvas"></canvas>
+  </div>
+
+  <!-- Right panel -->
+  <div class="right-panel">
+    <div class="card" id="latest-card">
+      <div class="card-hdr"><span class="icon">⚡</span> Latest Strike</div>
+      <div id="latest-inner"><div class="latest-empty">Waiting for first strike…</div></div>
+    </div>
+    <div class="card" id="gallery-card">
+      <div class="card-hdr">
+        <span class="icon">〰</span> Waveform Gallery
+        <span class="badge" id="gallery-count">0</span>
+      </div>
+      <div id="gallery-inner"><div class="gallery-empty">No waveforms yet</div></div>
+    </div>
+  </div>
+
+  <!-- Strike log table -->
+  <div class="card" id="table-card">
+    <div class="card-hdr">
+      <span class="icon">📋</span> Strike Log
+      <span class="badge" id="table-count">0 entries</span>
+    </div>
+    <div id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>UTC Time</th>
+            <th>GPS Timestamp (ns)</th>
+            <th>Peak Amp</th>
+            <th>SNR (dB)</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody id="strikes-tbody">
+          <tr><td colspan="6" class="no-data">No strikes yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script src="{{.BasePath}}/static/app.js"></script>
+</body>
+</html>

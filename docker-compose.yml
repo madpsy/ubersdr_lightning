@@ -1,0 +1,36 @@
+services:
+  ubersdr_lightning:
+    image: madpsy/ubersdr_lightning:latest
+    container_name: lightning
+    restart: unless-stopped
+    cpu_shares: 512
+    environment:
+      # UberSDR WebSocket URL
+      UBERSDR_URL: "ws://ubersdr:8080/ws"
+      #
+      # IQ centre frequency in Hz (default: 20000 — covers ~10–44 kHz VLF sferic band)
+      # CENTRE_HZ: "20000"
+      #
+      # IIR noise floor alpha (default: 0.9999 — ~2 s time constant at 48 kHz)
+      # IIR_ALPHA: "0.9999"
+      #
+      # Trigger threshold ratio (default: 2.0 — 6 dB above noise floor)
+      # THRESHOLD_RATIO: "2.0"
+      #
+      # Web UI port (default: 6097)
+      # WEB_PORT: "6097"
+    networks:
+      - sdr-network
+    volumes:
+      - ./lightning_data:/data
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "lightning"
+
+networks:
+  sdr-network:
+    external: true
+    name: ubersdr_sdr-network
