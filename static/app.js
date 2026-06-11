@@ -74,11 +74,13 @@ function drawSpectrum(bins, meta) {
   const canvas = document.getElementById('spectrum-canvas');
   if (!canvas) return;
 
-  // Use the canvas's intrinsic pixel dimensions (set via HTML width/height attrs).
-  // Do NOT reassign canvas.width/height here — that would clear the pixel buffer
-  // and reset the aspect ratio, causing the CSS height:auto to recalculate.
-  const W = canvas.width;   // 800 (set in HTML)
-  const H = canvas.height;  // 140 (set in HTML)
+  // The canvas is absolutely positioned inside a fixed-height wrapper (140px).
+  // Set the pixel buffer to match the wrapper's rendered size for crisp drawing.
+  const wrap = document.getElementById('spectrum-wrap');
+  const W = wrap ? wrap.offsetWidth  : 800;
+  const H = 140;
+  canvas.width  = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -198,11 +200,10 @@ function onSpectrumHover(e) {
   const rect    = canvas.getBoundingClientRect();
   const mx      = e.clientX - rect.left;
 
-  // The canvas pixel buffer is 800px wide but CSS scales it to rect.width.
-  // Scale PAD_L and plotW to CSS pixels so the hover position maps correctly.
-  const scale   = rect.width / canvas.width;
-  const PAD_L   = 38 * scale;
-  const PAD_R   = 8  * scale;
+  // canvas.width is now set to the wrapper's offsetWidth (same as rect.width),
+  // so no scaling needed — PAD_L is in the same pixel space as mx.
+  const PAD_L   = 38;
+  const PAD_R   = 8;
   const plotW   = rect.width - PAD_L - PAD_R;
 
   if (mx < PAD_L || mx > PAD_L + plotW) {
