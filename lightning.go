@@ -1,7 +1,7 @@
 // lightning.go — VLF sferic detector for ubersdr_lightning
 //
-// Connects to UberSDR in iq48 mode (48 kHz IQ, centred at 20 kHz, covering
-// roughly 10–44 kHz) and detects lightning sferics using:
+// Connects to UberSDR in iq48 mode (48 kHz IQ, centred at 25 kHz, covering
+// roughly 1–49 kHz) and detects lightning sferics using:
 //
 //  1. Warm-up period: IIR noise floor settles for warmupSeconds before
 //     the trigger is armed, preventing false triggers on connection.
@@ -40,7 +40,7 @@ import (
 const (
 	// IQ channel parameters
 	iqMode       = "iq48" // 48 kHz IQ bandwidth
-	iqCentreHz   = 20000  // 20 kHz centre → covers ~10–44 kHz effective VLF band
+	iqCentreHz   = 25000  // 25 kHz centre → covers 1–49 kHz (lower edge safely above DC)
 	iqSampleRate = 48000  // samples per second per channel (I or Q)
 
 	// Warm-up: number of seconds to settle the IIR noise floor before arming
@@ -189,7 +189,9 @@ type DetectorConfig struct {
 	// UberSDR WebSocket URL (ws:// or wss://)
 	UberSDRURL string
 
-	// CentreHz is the IQ channel centre frequency in Hz (default: 20000).
+	// CentreHz is the IQ channel centre frequency in Hz (default: 25000).
+	// At 25 kHz centre with iq48 (±24 kHz), the band covers 1–49 kHz —
+	// safely above DC and spanning the full VLF sferic spectrum.
 	CentreHz int
 
 	// IIRAlpha controls the noise floor tracking speed (default: 0.9999).

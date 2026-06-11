@@ -1,7 +1,8 @@
 // main.go — ubersdr_lightning: VLF lightning sferic detector
 //
-// Connects to UberSDR in iq48 mode (48 kHz IQ, centred at 20 kHz) and detects
-// lightning sferics using an IIR adaptive noise floor + threshold trigger.
+// Connects to UberSDR in iq48 mode (48 kHz IQ, centred at 25 kHz, covering
+// 1–49 kHz) and detects lightning sferics using an IIR adaptive noise floor
+// and threshold trigger.
 //
 // Usage:
 //
@@ -12,7 +13,7 @@
 //
 //	UBERSDR_URL      — UberSDR WebSocket URL
 //	WEB_PORT         — HTTP listen port (default 6097)
-//	CENTRE_HZ        — IQ centre frequency in Hz (default 20000)
+//	CENTRE_HZ        — IQ centre frequency in Hz (default 25000)
 //	IIR_ALPHA        — IIR noise floor alpha (default 0.9999)
 //	THRESHOLD_RATIO  — trigger threshold ratio (default 2.0)
 package main

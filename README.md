@@ -2,7 +2,7 @@
 
 A VLF lightning sferic detector addon for [UberSDR](https://ubersdr.org).
 
-Connects to UberSDR in `iq48` mode (48 kHz IQ, centred at 20 kHz, covering roughly 10–44 kHz) and detects lightning sferics in real time using an adaptive IIR noise floor and threshold trigger. Detected strikes are displayed in a live web UI with waveform captures suitable for TDOA cross-correlation between stations.
+Connects to UberSDR in `iq48` mode (48 kHz IQ, centred at 25 kHz, covering 1–49 kHz) and detects lightning sferics in real time using an adaptive IIR noise floor and threshold trigger. The 25 kHz centre keeps the lower band edge at 1 kHz — safely above DC — while the upper edge at 49 kHz spans the full VLF sferic spectrum. Detected strikes are displayed in a live web UI with waveform captures suitable for TDOA cross-correlation between stations.
 
 ---
 
@@ -73,7 +73,7 @@ All settings are environment variables (set in `docker-compose.yml`):
 |-------------------|------------------------------|-------------|
 | `UBERSDR_URL`     | `ws://ubersdr:8080/ws`       | UberSDR WebSocket URL |
 | `WEB_PORT`        | `6097`                       | HTTP listen port |
-| `CENTRE_HZ`       | `20000`                      | IQ centre frequency in Hz (covers ~10–44 kHz at 48 kHz IQ BW) |
+| `CENTRE_HZ`       | `25000`                      | IQ centre frequency in Hz (25 kHz centre → 1–49 kHz at ±24 kHz IQ BW) |
 | `IIR_ALPHA`       | `0.9999`                     | IIR noise floor tracking speed (higher = slower, ~2 s time constant) |
 | `THRESHOLD_RATIO` | `4.0`                        | Trigger threshold: envelope > noise × ratio (4.0 = 12 dB above noise) |
 
