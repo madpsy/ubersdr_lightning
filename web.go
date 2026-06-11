@@ -5,8 +5,9 @@
 //	GET  /              → static/index.html (rendered as Go template with BasePath)
 //	GET  /static/*      → embedded static files
 //	GET  /api/strikes   → JSON array of recent strikes (query: ?n=100)
+//	GET  /api/spectrum  → JSON: latest FFT spectrum (2048 bins, dBFS, 1–49 kHz)
 //	GET  /api/status    → JSON status (strike count, server time)
-//	GET  /api/events    → SSE stream of live StrikeEvents
+//	GET  /api/events    → SSE stream of live StrikeEvents + spectrum frames
 //
 // When running behind UberSDR's addon proxy the proxy sets the
 // X-Forwarded-Prefix header (e.g. "/addons/lightning").  index.html is
@@ -31,7 +32,7 @@ import (
 var staticFiles embed.FS
 
 // startHTTPServer starts the HTTP server and blocks until it returns an error.
-func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub) error {
+func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnalyser *SpectrumAnalyser) error {
 	mux := http.NewServeMux()
 
 	// Parse index.html as a Go template so BasePath can be injected.
@@ -90,6 +91,30 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub) error {
 			strikes = []StrikeEvent{}
 		}
 		jsonResponse(w, strikes)
+	})
+
+	// GET /api/spectrum — latest FFT spectrum as JSON (for polling clients)
+	// Returns: {bins:[dBFS...], bin_count, freq_start_hz, freq_end_hz, bin_width_hz}
+	mux.HandleFunc("/api/spectrum", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		bins := specAnalyser.Latest()
+		type specResp struct {
+			Bins      []float32 `json:"bins"`
+			BinCount  int       `json:"bin_count"`
+			FreqStart float64   `json:"freq_start_hz"`
+			FreqEnd   float64   `json:"freq_end_hz"`
+			BinWidth  float64   `json:"bin_width_hz"`
+		}
+		jsonResponse(w, specResp{
+			Bins:      bins,
+			BinCount:  len(bins),
+			FreqStart: binFreqHz(0),
+			FreqEnd:   binFreqHz(len(bins) - 1),
+			BinWidth:  float64(iqSampleRate) / float64(fftSize),
+		})
 	})
 
 	// GET /api/status

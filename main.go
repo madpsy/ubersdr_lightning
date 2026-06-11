@@ -86,9 +86,14 @@ func main() {
 	// Channel from detector → SSE broadcaster
 	strikeOut := make(chan StrikeEvent, 64)
 
-	// SSE hub — fans out StrikeEvents to all connected browser clients
+	// SSE hub — fans out StrikeEvents and spectrum frames to browser clients
 	hub := newSSEHub()
 	go hub.runBroadcaster(ctx, strikeOut)
+
+	// Spectrum analyser — computes FFT every 5 s and broadcasts via SSE
+	specAnalyser := NewSpectrumAnalyser(hub)
+	specAnalyser.Start()
+	defer specAnalyser.Stop()
 
 	// Lightning detector
 	cfg := DetectorConfig{
@@ -97,12 +102,12 @@ func main() {
 		IIRAlpha:       *iirAlpha,
 		ThresholdRatio: *thresholdRatio,
 	}
-	det := NewLightningDetector(cfg, history, strikeOut)
+	det := NewLightningDetector(cfg, history, strikeOut, specAnalyser)
 	go det.Run(ctx)
 
 	// HTTP server (SSE + REST API + static UI)
 	go func() {
-		if err := startHTTPServer(*listenAddr, history, hub); err != nil {
+		if err := startHTTPServer(*listenAddr, history, hub, specAnalyser); err != nil {
 			log.Fatalf("[main] HTTP server: %v", err)
 		}
 	}()

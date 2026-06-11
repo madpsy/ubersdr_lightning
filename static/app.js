@@ -12,6 +12,10 @@ const actBuf     = [];       // {ts:Date, snrDB:number}
 const gallery    = [];       // StrikeEvent[] newest-first
 const seenIds    = new Set(); // deduplication: strike IDs already processed
 
+// Spectrum state
+let lastSpectrumBins = null;  // Float32Array of dBFS values
+let lastSpectrumMeta = null;  // {freq_start_hz, freq_end_hz, bin_width_hz}
+
 // DOM refs (populated after DOMContentLoaded)
 let connPill, connLabel, hdrTotal, hdrRate;
 let statTotal, statLast, statLastSub, statSNR, statRate;
@@ -48,12 +52,128 @@ document.addEventListener('DOMContentLoaded', () => {
   connect();
   initReceiverMap();
   setInterval(drawActivity, 1000);
+  // Spectrum canvas resize handler
+  window.addEventListener('resize', () => { if (lastSpectrumBins) drawSpectrum(lastSpectrumBins, lastSpectrumMeta); });
   setInterval(() => {
     const rate = calcRate();
     if (statRate) statRate.textContent = rate.toFixed(1);
     if (hdrRate)  hdrRate.textContent  = rate.toFixed(1);
   }, 5000);
 });
+
+// ── Spectrum drawing ───────────────────────────────────────────────────────
+function drawSpectrum(bins, meta) {
+  const canvas = document.getElementById('spectrum-canvas');
+  if (!canvas) return;
+
+  const W = canvas.offsetWidth;
+  const H = canvas.offsetHeight || 140;
+  canvas.width  = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  if (!bins || bins.length === 0) return;
+
+  const DB_MIN   = -120;
+  const DB_MAX   = 0;
+  const DB_RANGE = DB_MAX - DB_MIN;
+  const PAD_L    = 38;  // left margin for dB labels
+  const PAD_B    = 18;  // bottom margin for freq labels
+  const PAD_T    = 6;
+  const PAD_R    = 8;
+  const plotW    = W - PAD_L - PAD_R;
+  const plotH    = H - PAD_B - PAD_T;
+
+  const freqStart = meta ? meta.freqStart : 1000;
+  const freqEnd   = meta ? meta.freqEnd   : 49000;
+  const freqRange = freqEnd - freqStart;
+  const n         = bins.length;
+
+  // ── Background ──
+  ctx.fillStyle = '#0d1520';
+  ctx.fillRect(PAD_L, PAD_T, plotW, plotH);
+
+  // ── dB grid lines ──
+  ctx.strokeStyle = 'rgba(30,45,66,0.9)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = 'rgba(107,127,153,0.7)';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'right';
+  for (let db = DB_MIN; db <= DB_MAX; db += 20) {
+    const y = PAD_T + plotH - ((db - DB_MIN) / DB_RANGE) * plotH;
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y); ctx.stroke();
+    ctx.fillText(db + ' dB', PAD_L - 3, y + 3);
+  }
+
+  // ── Frequency grid lines (every 5 kHz) ──
+  ctx.textAlign = 'center';
+  for (let f = 5000; f < freqEnd; f += 5000) {
+    if (f < freqStart) continue;
+    const x = PAD_L + ((f - freqStart) / freqRange) * plotW;
+    ctx.strokeStyle = f % 10000 === 0 ? 'rgba(42,63,90,0.9)' : 'rgba(30,45,66,0.6)';
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
+    ctx.fillStyle = 'rgba(107,127,153,0.7)';
+    ctx.fillText((f / 1000).toFixed(0) + 'k', x, H - 3);
+  }
+
+  // ── Spectrum fill ──
+  const grad = ctx.createLinearGradient(0, PAD_T, 0, PAD_T + plotH);
+  grad.addColorStop(0,   'rgba(56,189,248,0.7)');
+  grad.addColorStop(0.4, 'rgba(245,200,66,0.5)');
+  grad.addColorStop(1,   'rgba(245,200,66,0.05)');
+
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) {
+    const x = PAD_L + (k / (n - 1)) * plotW;
+    const db = Math.max(DB_MIN, Math.min(DB_MAX, bins[k]));
+    const y  = PAD_T + plotH - ((db - DB_MIN) / DB_RANGE) * plotH;
+    k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.lineTo(PAD_L + plotW, PAD_T + plotH);
+  ctx.lineTo(PAD_L, PAD_T + plotH);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // ── Spectrum line ──
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) {
+    const x = PAD_L + (k / (n - 1)) * plotW;
+    const db = Math.max(DB_MIN, Math.min(DB_MAX, bins[k]));
+    const y  = PAD_T + plotH - ((db - DB_MIN) / DB_RANGE) * plotH;
+    k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // ── Notable frequency markers ──
+  const markers = [
+    { f: 10000, label: '10k', color: 'rgba(167,139,250,0.6)' },
+    { f: 20000, label: '20k', color: 'rgba(167,139,250,0.6)' },
+    { f: 25000, label: '25k\n(centre)', color: 'rgba(245,200,66,0.8)' },
+    { f: 30000, label: '30k', color: 'rgba(167,139,250,0.6)' },
+  ];
+  markers.forEach(({ f, label, color }) => {
+    if (f < freqStart || f > freqEnd) return;
+    const x = PAD_L + ((f - freqStart) / freqRange) * plotW;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label.split('\n')[0], x, PAD_T + 10);
+  });
+
+  // ── Border ──
+  ctx.strokeStyle = 'rgba(30,45,66,0.8)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(PAD_L, PAD_T, plotW, plotH);
+}
 
 // ── Receiver map ───────────────────────────────────────────────────────────
 // Fetch /api/description from the root of the domain (not the addon base path)
@@ -164,6 +284,27 @@ function connect() {
   es.onmessage = e => {
     try { onStrike(JSON.parse(e.data), true); } catch(_) {}
   };
+
+  // Named "spectrum" event = {bins(base64 float32), bin_count, freq_start_hz, ...}
+  es.addEventListener('spectrum', e => {
+    try {
+      const msg = JSON.parse(e.data);
+      // Decode base64 → ArrayBuffer → Float32Array
+      const raw  = atob(msg.bins);
+      const buf  = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+      const bins = new Float32Array(buf.buffer);
+      lastSpectrumBins = bins;
+      lastSpectrumMeta = {
+        freqStart: msg.freq_start_hz,
+        freqEnd:   msg.freq_end_hz,
+        binWidth:  msg.bin_width_hz,
+      };
+      drawSpectrum(bins, lastSpectrumMeta);
+      const badge = document.getElementById('spectrum-badge');
+      if (badge) badge.textContent = new Date().toISOString().slice(11, 19) + ' UTC';
+    } catch(_) {}
+  });
 
   // Named "waveform" event = {id, waveform} for the most recent strike
   es.addEventListener('waveform', e => {

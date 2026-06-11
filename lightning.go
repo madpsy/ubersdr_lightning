@@ -224,12 +224,15 @@ type LightningDetector struct {
 	// strikeOut receives every detected StrikeEvent for broadcast to SSE clients.
 	strikeOut chan StrikeEvent
 
+	// specAnalyser receives raw IQ PCM bytes for spectrum analysis.
+	specAnalyser *SpectrumAnalyser
+
 	// sessionID is the active user_session_id for the WebSocket connection.
 	sessionID string
 }
 
 // NewLightningDetector creates a LightningDetector with the given config.
-func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut chan StrikeEvent) *LightningDetector {
+func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut chan StrikeEvent, specAnalyser *SpectrumAnalyser) *LightningDetector {
 	if cfg.CentreHz == 0 {
 		cfg.CentreHz = iqCentreHz
 	}
@@ -240,9 +243,10 @@ func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut 
 		cfg.ThresholdRatio = defaultThresholdRatio
 	}
 	return &LightningDetector{
-		cfg:       cfg,
-		history:   history,
-		strikeOut: strikeOut,
+		cfg:          cfg,
+		history:      history,
+		strikeOut:    strikeOut,
+		specAnalyser: specAnalyser,
 	}
 }
 
@@ -409,6 +413,11 @@ func (ld *LightningDetector) runDetectionLoop(
 			pkt, err := dec.decode(res.msg, true)
 			if err != nil || len(pkt.pcm) == 0 {
 				continue
+			}
+
+			// Feed raw PCM to the spectrum analyser (non-blocking)
+			if ld.specAnalyser != nil {
+				ld.specAnalyser.AddSamples(pkt.pcm)
 			}
 
 			// Compute envelope for this packet
