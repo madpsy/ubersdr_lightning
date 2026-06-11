@@ -54,6 +54,13 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(drawActivity, 1000);
   // Spectrum canvas resize handler
   window.addEventListener('resize', () => { if (lastSpectrumBins) drawSpectrum(lastSpectrumBins, lastSpectrumMeta); });
+
+  // Spectrum canvas hover tooltip
+  const specCanvas = document.getElementById('spectrum-canvas');
+  if (specCanvas) {
+    specCanvas.addEventListener('mousemove', onSpectrumHover);
+    specCanvas.addEventListener('mouseleave', () => { tooltip.className = ''; });
+  }
   setInterval(() => {
     const rate = calcRate();
     if (statRate) statRate.textContent = rate.toFixed(1);
@@ -173,6 +180,46 @@ function drawSpectrum(bins, meta) {
   ctx.strokeStyle = 'rgba(30,45,66,0.8)';
   ctx.lineWidth = 1;
   ctx.strokeRect(PAD_L, PAD_T, plotW, plotH);
+}
+
+// ── Spectrum hover tooltip ─────────────────────────────────────────────────
+function onSpectrumHover(e) {
+  if (!lastSpectrumBins || !lastSpectrumMeta) return;
+
+  const canvas = document.getElementById('spectrum-canvas');
+  if (!canvas) return;
+
+  const rect   = canvas.getBoundingClientRect();
+  const mx     = e.clientX - rect.left;
+
+  // Match the same layout constants as drawSpectrum
+  const PAD_L  = 38;
+  const PAD_R  = 8;
+  const plotW  = canvas.width - PAD_L - PAD_R;
+
+  if (mx < PAD_L || mx > PAD_L + plotW) {
+    tooltip.className = '';
+    return;
+  }
+
+  const frac      = (mx - PAD_L) / plotW;
+  const freqStart = lastSpectrumMeta.freqStart;
+  const freqEnd   = lastSpectrumMeta.freqEnd;
+  const freqHz    = freqStart + frac * (freqEnd - freqStart);
+
+  // Find nearest bin
+  const n      = lastSpectrumBins.length;
+  const binIdx = Math.round(frac * (n - 1));
+  const db     = lastSpectrumBins[Math.max(0, Math.min(n - 1, binIdx))];
+
+  const freqLabel = freqHz >= 1000
+    ? (freqHz / 1000).toFixed(2) + ' kHz'
+    : freqHz.toFixed(0) + ' Hz';
+
+  tooltip.textContent = `${freqLabel}  ${db.toFixed(1)} dBFS`;
+  tooltip.style.left  = (e.clientX + 14) + 'px';
+  tooltip.style.top   = (e.clientY - 30) + 'px';
+  tooltip.className   = 'show';
 }
 
 // ── Receiver map ───────────────────────────────────────────────────────────

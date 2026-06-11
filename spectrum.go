@@ -4,16 +4,18 @@
 // Hann-windowed FFT every spectrumInterval seconds, and broadcasts the
 // averaged power spectrum to SSE clients as a named "spectrum" event.
 //
-// The spectrum covers the full iq48 band:
+// The spectrum covers the full iq48 band using FFT-shift ordering:
 //
 //	centre = 25 kHz, bandwidth = 48 kHz → 1–49 kHz
 //	FFT size = 4096 → bin width = 48000/4096 ≈ 11.7 Hz
-//	Output = 2048 positive-frequency bins (DC to Nyquist)
+//	Output = 4096 bins (full band, FFT-shifted so bin 0 = lowest frequency)
 //
-// Frequency of bin k:
+// FFT-shift maps raw FFT output to ascending frequency order:
 //
-//	f(k) = (centreHz - sampleRate/2) + k * (sampleRate / fftSize)
-//	     = 1000 + k * 11.71875 Hz
+//	raw bin 2048 → shifted bin 0    → 1000 Hz  (lower edge)
+//	raw bin 4095 → shifted bin 2047 → 24988 Hz
+//	raw bin 0    → shifted bin 2048 → 25000 Hz (centre)
+//	raw bin 2047 → shifted bin 4095 → 48988 Hz (upper edge)
 package main
 
 import (
@@ -32,19 +34,33 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	fftSize          = 4096                    // must be power of 2
-	fftBins          = fftSize / 2             // positive-frequency bins (2048)
-	spectrumInterval = 5 * time.Second         // how often to broadcast
-	spectrumMinDB    = -120.0                  // floor for display
-	spectrumMaxDB    = 0.0                     // ceiling (0 dBFS)
+	fftSize          = 4096            // must be power of 2
+	fftBins          = fftSize         // all bins after FFT-shift (full 48 kHz)
+	spectrumInterval = 5 * time.Second // how often to broadcast
+	spectrumMinDB    = -120.0          // floor for display
+	spectrumMaxDB    = 0.0             // ceiling (0 dBFS)
 )
 
-// binFreqHz returns the centre frequency in Hz of FFT bin k.
-// With centre=25000 Hz and sampleRate=48000:
-//   f(0)    ≈ 1000 Hz  (lower edge)
-//   f(2047) ≈ 48988 Hz (upper edge)
+// binFreqHz returns the centre frequency in Hz of FFT-shifted bin k.
+//
+// After FFT-shift, bin ordering is:
+//
+//	k=0       → 1000 Hz  (centre - sampleRate/2, lower edge)
+//	k=2047    → 24988 Hz (just below centre)
+//	k=2048    → 25000 Hz (centre frequency)
+//	k=4095    → 48988 Hz (upper edge)
 func binFreqHz(k int) float64 {
-	return float64(iqCentreHz-iqSampleRate/2) + float64(k)*float64(iqSampleRate)/float64(fftSize)
+	// Map shifted bin k back to raw FFT bin index, then to frequency.
+	// Shifted bin k corresponds to raw bin (k + fftSize/2) % fftSize.
+	rawBin := (k + fftSize/2) % fftSize
+	// Raw bin 0 = DC = centre frequency; positive bins = above centre.
+	// Frequency = centre + rawBin * binWidth  (for rawBin 0..N/2-1)
+	// Frequency = centre + (rawBin - N) * binWidth (for rawBin N/2..N-1, negative freqs)
+	binWidth := float64(iqSampleRate) / float64(fftSize)
+	if rawBin < fftSize/2 {
+		return float64(iqCentreHz) + float64(rawBin)*binWidth
+	}
+	return float64(iqCentreHz) + float64(rawBin-fftSize)*binWidth
 }
 
 // ---------------------------------------------------------------------------
@@ -60,16 +76,18 @@ type SpectrumAnalyser struct {
 	window [fftSize]float64
 
 	// Accumulator: sum of power spectra across frames in the current interval
+	// Indexed in FFT-shifted order (bin 0 = lowest frequency).
 	accumPower [fftBins]float64
 	accumCount int // number of FFT frames accumulated
 
 	// Latest averaged spectrum (dBFS per bin), protected by mu
+	// Indexed in FFT-shifted order (bin 0 = lowest frequency).
 	latest [fftBins]float32
 
 	// Sample ring buffer for the current FFT frame
-	ibuf [fftSize]float64 // I samples
-	qbuf [fftSize]float64 // Q samples
-	bufIdx int            // next write position in ring buffer
+	ibuf   [fftSize]float64 // I samples
+	qbuf   [fftSize]float64 // Q samples
+	bufIdx int              // next write position in ring buffer
 
 	// Ticker for periodic broadcast
 	ticker *time.Ticker
@@ -129,8 +147,8 @@ func (sa *SpectrumAnalyser) AddSamples(pcm []byte) {
 	}
 }
 
-// processFrame applies the Hann window and computes the FFT power spectrum
-// for the current buffer, accumulating into accumPower.
+// processFrame applies the Hann window, computes the FFT, and accumulates
+// the power spectrum in FFT-shifted order (bin 0 = lowest frequency).
 // Must be called with sa.mu held.
 func (sa *SpectrumAnalyser) processFrame() {
 	// Build complex input with Hann window
@@ -143,13 +161,21 @@ func (sa *SpectrumAnalyser) processFrame() {
 	// In-place Cooley-Tukey FFT
 	fft(x)
 
-	// Accumulate power spectrum (positive frequencies only)
-	// Normalise by fftSize and window power (Hann: sum(w²)/N ≈ 0.375)
+	// Accumulate power spectrum in FFT-shifted order.
+	// FFT-shift: raw bin (fftSize/2 + k) % fftSize → shifted bin k
+	// This maps negative frequencies first, then positive, giving
+	// ascending frequency order from lower edge to upper edge.
+	//
+	// Normalise by fftSize² and Hann window power (≈ 0.375).
 	const hannPower = 0.375
 	norm := float64(fftSize) * float64(fftSize) * hannPower
-	for k := 0; k < fftBins; k++ {
-		re := real(x[k])
-		im := imag(x[k])
+
+	half := fftSize / 2
+	for k := 0; k < fftSize; k++ {
+		// Raw FFT bin for shifted position k
+		rawBin := (k + half) % fftSize
+		re := real(x[rawBin])
+		im := imag(x[rawBin])
 		sa.accumPower[k] += (re*re + im*im) / norm
 	}
 	sa.accumCount++
@@ -192,11 +218,11 @@ func (sa *SpectrumAnalyser) flush() {
 	b64 := base64.StdEncoding.EncodeToString(raw)
 
 	type specPayload struct {
-		Bins      string  `json:"bins"`      // base64(float32 LE × 2048)
-		BinCount  int     `json:"bin_count"` // 2048
-		FreqStart float64 `json:"freq_start_hz"` // Hz of bin 0
-		FreqEnd   float64 `json:"freq_end_hz"`   // Hz of bin 2047
-		BinWidth  float64 `json:"bin_width_hz"`  // Hz per bin
+		Bins      string  `json:"bins"`          // base64(float32 LE × 4096)
+		BinCount  int     `json:"bin_count"`     // 4096
+		FreqStart float64 `json:"freq_start_hz"` // Hz of bin 0 (≈ 1000 Hz)
+		FreqEnd   float64 `json:"freq_end_hz"`   // Hz of bin 4095 (≈ 48988 Hz)
+		BinWidth  float64 `json:"bin_width_hz"`  // Hz per bin (≈ 11.72 Hz)
 	}
 	payload, _ := json.Marshal(specPayload{
 		Bins:      b64,
@@ -218,7 +244,8 @@ func (sa *SpectrumAnalyser) flush() {
 	sa.hub.mu.Unlock()
 }
 
-// Latest returns the most recent averaged spectrum as a slice of dBFS values.
+// Latest returns the most recent averaged spectrum as a slice of dBFS values
+// in FFT-shifted order (bin 0 = lowest frequency ≈ 1 kHz).
 // Used by GET /api/spectrum.
 func (sa *SpectrumAnalyser) Latest() []float32 {
 	sa.mu.Lock()
