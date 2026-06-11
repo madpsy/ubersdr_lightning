@@ -75,7 +75,7 @@ function drawSpectrum(bins, meta) {
   if (!canvas) return;
 
   const W = canvas.offsetWidth;
-  const H = canvas.offsetHeight || 140;
+  const H = 140; // fixed height matching CSS and HTML height attribute
   canvas.width  = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d');
