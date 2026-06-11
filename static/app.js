@@ -275,7 +275,14 @@ function updateLatest(s) {
   const utc    = new Date(s.timestamp_ns / 1e6).toISOString().replace('T',' ').replace('Z',' UTC');
   const snrPct = Math.min(100, Math.max(0, (db / 40) * 100));
 
+  const satWarning = s.saturated
+    ? `<div style="margin-bottom:8px;padding:6px 10px;background:rgba(255,140,66,0.12);border:1px solid rgba(255,140,66,0.4);border-radius:6px;font-size:11px;color:#ff8c42">
+        ⚠ <strong>ADC Saturated</strong> — waveform amplitude clipped. May be a very close strike or strong local interference. GPS timestamp is still valid.
+       </div>`
+    : '';
+
   let html = `
+    ${satWarning}
     <div class="latest-ts"><strong>${utc}</strong></div>
     <div class="kv-grid">
       <div class="kv hi"><div class="k">Peak Amp</div><div class="v">${s.peak_amplitude.toFixed(5)}</div></div>
@@ -374,13 +381,15 @@ function rebuildGallery() {
   const thumbs = withWaveform.map(s => {
     const div = document.createElement('div');
     div.className = 'wf-thumb';
-    const ts = new Date(s.timestamp_ns / 1e6).toISOString().slice(11, 23);
-    const db = (s.snr_db || 0).toFixed(1);
+    if (s.saturated) div.style.borderColor = 'rgba(255,140,66,0.5)';
+    const ts    = new Date(s.timestamp_ns / 1e6).toISOString().slice(11, 23);
+    const db    = (s.snr_db || 0).toFixed(1);
+    const satEl = s.saturated ? '<span title="ADC saturated" style="color:#ff8c42">⚠</span> ' : '';
     // Use 2× pixel dimensions for crisp rendering on HiDPI screens.
     // CSS width:100% scales it down visually.
     div.innerHTML = `<canvas width="240" height="88"></canvas>
       <div class="wf-meta">
-        <span>${ts}</span>
+        <span>${satEl}${ts}</span>
         <span class="snr-val">${db} dB</span>
       </div>`;
     div.addEventListener('click', () => updateLatest(s));
@@ -402,14 +411,17 @@ function prependTableRow(s) {
   if (ph) ph.parentElement.remove();
 
   tableRows++;
-  const utc = new Date(s.timestamp_ns / 1e6).toISOString().replace('T',' ').slice(0, 23);
-  const db  = s.snr_db || 0;
-  const sc  = snrClass(db);
-  const tr  = document.createElement('tr');
+  const utc      = new Date(s.timestamp_ns / 1e6).toISOString().replace('T',' ').slice(0, 23);
+  const db       = s.snr_db || 0;
+  const sc       = snrClass(db);
+  const satBadge = s.saturated
+    ? ' <span title="ADC saturated — very close strike or strong local interference" style="color:#ff8c42;font-size:10px;font-family:sans-serif">⚠ SAT</span>'
+    : '';
+  const tr = document.createElement('tr');
   tr.className = 'new-row';
   tr.innerHTML = `
     <td class="seq-col">${tableRows}</td>
-    <td class="ts-col">${utc}</td>
+    <td class="ts-col">${utc}${satBadge}</td>
     <td>${s.timestamp_ns}</td>
     <td>${s.peak_amplitude.toFixed(4)}</td>
     <td class="${sc}">${db.toFixed(1)}</td>

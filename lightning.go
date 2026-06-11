@@ -47,6 +47,13 @@ const (
 	// the trigger.  Prevents false triggers immediately after connection.
 	warmupSeconds = 5
 
+	// Saturation detection: when both I and Q rail at ±32767, the envelope
+	// = √2 ≈ 1.4142. A peak above this threshold indicates ADC clipping.
+	// Saturated events are flagged (not rejected) — a very close lightning
+	// strike can genuinely saturate the ADC; the GPS timestamp is still valid
+	// for TDOA even if the waveform amplitude is meaningless.
+	saturationLimit = 0.99
+
 	// Sferic detection parameters
 	// IIR noise floor: α controls how fast the floor tracks background changes.
 	// α = 0.9999 → time constant ≈ 1/(1-α)/sampleRate ≈ 2 s at 48 kHz.
@@ -117,6 +124,13 @@ type StrikeEvent struct {
 
 	// DurationMs is DurationSamples converted to milliseconds.
 	DurationMs float64 `json:"duration_ms"`
+
+	// Saturated is true when the peak envelope reached the ADC ceiling
+	// (peak ≥ saturationLimit ≈ 0.99, i.e. envelope ≈ √2 ≈ 1.414).
+	// A saturated event may be a very close lightning strike (ADC overloaded
+	// by a genuine sferic) or local interference. The GPS timestamp is still
+	// valid for TDOA even when the waveform amplitude is clipped.
+	Saturated bool `json:"saturated"`
 
 	// Waveform is a pre+post trigger window of normalised envelope values.
 	// Length ≈ 2×captureSamples. Used for TDOA cross-correlation.
@@ -368,13 +382,14 @@ func (ld *LightningDetector) runDetectionLoop(
 	state := stateIdle
 
 	var (
-		trigPeak     float64   // peak envelope during armed state
-		trigPeakTs   int64     // GPS timestamp of peak sample
-		trigDuration int       // samples above threshold
-		trigPeakIdx  int       // index within armed window where peak occurred
-		trigArmIdx   int       // sample index when trigger fired (for peak position)
-		postCapBuf   []float64 // post-trigger envelope samples
-		postCapLeft  int       // remaining post-trigger samples to collect
+		trigPeak      float64   // peak envelope during armed state
+		trigPeakTs    int64     // GPS timestamp of peak sample
+		trigDuration  int       // samples above threshold
+		trigPeakIdx   int       // index within armed window where peak occurred
+		trigArmIdx    int       // sample index when trigger fired (for peak position)
+		trigSaturated bool      // true if peak hit ADC ceiling (≥ saturationLimit)
+		postCapBuf    []float64 // post-trigger envelope samples
+		postCapLeft   int       // remaining post-trigger samples to collect
 	)
 
 	for {
@@ -476,6 +491,13 @@ func (ld *LightningDetector) runDetectionLoop(
 							break
 						}
 
+						// Saturation flag: if the peak hit the ADC ceiling
+						// (envelope ≈ √2 ≈ 1.414), the waveform amplitude is clipped.
+						// We still capture the event — a very close lightning strike
+						// can genuinely saturate the ADC; the GPS timestamp remains
+						// valid for TDOA. The Saturated flag lets the UI warn the user.
+						trigSaturated = trigPeak >= saturationLimit
+
 						// Start post-trigger capture
 						state = stateCapture
 						postCapBuf = make([]float64, 0, captureSamples)
@@ -489,6 +511,7 @@ func (ld *LightningDetector) runDetectionLoop(
 						// Emit strike event
 						strike := ld.buildStrike(
 							trigPeakTs, trigPeak, noiseFloor, trigDuration,
+							trigSaturated,
 							preTrig, preTrigIdx, preTrigTs,
 							postCapBuf,
 						)
@@ -498,8 +521,12 @@ func (ld *LightningDetector) runDetectionLoop(
 						default:
 							// SSE hub full — drop (non-blocking)
 						}
-						log.Printf("[lightning] strike detected: ts=%d peak=%.4f snr=%.1fdB dur=%.2fms",
-							strike.TimestampNs, strike.PeakAmplitude, strike.SNRdB, strike.DurationMs)
+						satTag := ""
+						if strike.Saturated {
+							satTag = " [SATURATED — ADC clipping]"
+						}
+						log.Printf("[lightning] strike detected: ts=%d peak=%.4f snr=%.1fdB dur=%.2fms%s",
+							strike.TimestampNs, strike.PeakAmplitude, strike.SNRdB, strike.DurationMs, satTag)
 						state = stateIdle
 						trigDuration = 0
 					}
@@ -512,6 +539,7 @@ func (ld *LightningDetector) runDetectionLoop(
 // buildStrike assembles a StrikeEvent from detector state.
 func (ld *LightningDetector) buildStrike(
 	peakTs int64, peakAmp, noiseFloor float64, durationSamples int,
+	saturated bool,
 	preTrig []float64, preTrigIdx int, preTrigTs []int64,
 	postCap []float64,
 ) StrikeEvent {
@@ -546,6 +574,7 @@ func (ld *LightningDetector) buildStrike(
 		SNRdB:           snrDB,
 		DurationSamples: durationSamples,
 		DurationMs:      float64(durationSamples) * 1000.0 / iqSampleRate,
+		Saturated:       saturated,
 		Waveform:        waveform,
 	}
 }
