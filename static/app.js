@@ -53,8 +53,8 @@ document.addEventListener('DOMContentLoaded', () => {
   connect();
   initReceiverMap();
   setInterval(drawActivity, 1000);
-  // Spectrum canvas resize handler
-  window.addEventListener('resize', () => { if (lastSpectrumBins) drawSpectrum(lastSpectrumBins, lastSpectrumMeta); });
+  // Spectrum canvas: no resize handler needed — CSS width:100% + height:auto
+  // scales the canvas element automatically without redrawing.
 
   // Spectrum canvas hover tooltip
   const specCanvas = document.getElementById('spectrum-canvas');
@@ -74,10 +74,11 @@ function drawSpectrum(bins, meta) {
   const canvas = document.getElementById('spectrum-canvas');
   if (!canvas) return;
 
-  const W = canvas.offsetWidth;
-  const H = 140; // fixed height matching CSS and HTML height attribute
-  canvas.width  = W;
-  canvas.height = H;
+  // Use the canvas's intrinsic pixel dimensions (set via HTML width/height attrs).
+  // Do NOT reassign canvas.width/height here — that would clear the pixel buffer
+  // and reset the aspect ratio, causing the CSS height:auto to recalculate.
+  const W = canvas.width;   // 800 (set in HTML)
+  const H = canvas.height;  // 140 (set in HTML)
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
 
@@ -194,13 +195,15 @@ function onSpectrumHover(e) {
   const canvas = document.getElementById('spectrum-canvas');
   if (!canvas) return;
 
-  const rect   = canvas.getBoundingClientRect();
-  const mx     = e.clientX - rect.left;
+  const rect    = canvas.getBoundingClientRect();
+  const mx      = e.clientX - rect.left;
 
-  // Match the same layout constants as drawSpectrum
-  const PAD_L  = 38;
-  const PAD_R  = 8;
-  const plotW  = canvas.width - PAD_L - PAD_R;
+  // The canvas pixel buffer is 800px wide but CSS scales it to rect.width.
+  // Scale PAD_L and plotW to CSS pixels so the hover position maps correctly.
+  const scale   = rect.width / canvas.width;
+  const PAD_L   = 38 * scale;
+  const PAD_R   = 8  * scale;
+  const plotW   = rect.width - PAD_L - PAD_R;
 
   if (mx < PAD_L || mx > PAD_L + plotW) {
     tooltip.className = '';

@@ -142,9 +142,12 @@
     .gallery-empty { grid-column: 1 / 3; text-align: center; color: var(--muted); font-style: italic; padding: 20px 0; font-size: 11px; }
 
     /* ── Spectrum ── */
-    #spectrum-canvas { width: 100%; height: 140px; display: block; cursor: crosshair; vertical-align: top; }
-    #spectrum-card { grid-column: 1 / 2; }
-    #spectrum-card .card-hdr + canvas { display: block; }
+    /* The canvas pixel buffer is set to 800×140 in the HTML attribute.
+       CSS width:100% scales it horizontally to fill the card.
+       height:auto lets the browser maintain the 800:140 aspect ratio,
+       which keeps the rendered height at ~140px regardless of card width. */
+    #spectrum-canvas { width: 100%; height: auto; display: block; cursor: crosshair; }
+    #spectrum-card { grid-column: 1 / 2; overflow: hidden; }
 
     /* ── Strike table ── */
     #table-wrap { overflow-x: auto; overflow-y: auto; max-height: 320px; -webkit-overflow-scrolling: touch; }
@@ -300,7 +303,7 @@
       <span class="icon">📡</span> VLF Spectrum (1–49 kHz)
       <span class="badge" id="spectrum-badge">waiting…</span>
     </div>
-    <canvas id="spectrum-canvas" height="140"></canvas>
+    <canvas id="spectrum-canvas" width="800" height="140"></canvas>
   </div>
 
   <!-- Strike log table -->
