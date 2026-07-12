@@ -6,11 +6,11 @@
 //
 // The spectrum covers the full iq48 band using FFT-shift ordering:
 //
-//	centre = 25 kHz, bandwidth = 48 kHz → 1–49 kHz
+//	centre = CENTRE_HZ (default 25 kHz), bandwidth = 48 kHz
 //	FFT size = 4096 → bin width = 48000/4096 ≈ 11.7 Hz
 //	Output = 4096 bins (full band, FFT-shifted so bin 0 = lowest frequency)
 //
-// FFT-shift maps raw FFT output to ascending frequency order:
+// FFT-shift maps raw FFT output to ascending frequency order (example at 25 kHz centre):
 //
 //	raw bin 2048 → shifted bin 0    → 1000 Hz  (lower edge)
 //	raw bin 4095 → shifted bin 2047 → 24988 Hz
@@ -41,28 +41,6 @@ const (
 	spectrumMaxDB    = 0.0             // ceiling (0 dBFS)
 )
 
-// binFreqHz returns the centre frequency in Hz of FFT-shifted bin k.
-//
-// After FFT-shift, bin ordering is:
-//
-//	k=0       → 1000 Hz  (centre - sampleRate/2, lower edge)
-//	k=2047    → 24988 Hz (just below centre)
-//	k=2048    → 25000 Hz (centre frequency)
-//	k=4095    → 48988 Hz (upper edge)
-func binFreqHz(k int) float64 {
-	// Map shifted bin k back to raw FFT bin index, then to frequency.
-	// Shifted bin k corresponds to raw bin (k + fftSize/2) % fftSize.
-	rawBin := (k + fftSize/2) % fftSize
-	// Raw bin 0 = DC = centre frequency; positive bins = above centre.
-	// Frequency = centre + rawBin * binWidth  (for rawBin 0..N/2-1)
-	// Frequency = centre + (rawBin - N) * binWidth (for rawBin N/2..N-1, negative freqs)
-	binWidth := float64(iqSampleRate) / float64(fftSize)
-	if rawBin < fftSize/2 {
-		return float64(iqCentreHz) + float64(rawBin)*binWidth
-	}
-	return float64(iqCentreHz) + float64(rawBin-fftSize)*binWidth
-}
-
 // ---------------------------------------------------------------------------
 // SpectrumAnalyser
 // ---------------------------------------------------------------------------
@@ -70,6 +48,11 @@ func binFreqHz(k int) float64 {
 // SpectrumAnalyser accumulates IQ samples, computes averaged FFT spectra,
 // and broadcasts them to the SSE hub.
 type SpectrumAnalyser struct {
+	// centreHz is the runtime IQ centre frequency in Hz (from CENTRE_HZ /
+	// -centre-hz flag).  It is set once at construction and never mutated,
+	// so no lock is needed for reads.
+	centreHz int
+
 	mu sync.Mutex
 
 	// Hann window coefficients (precomputed)
@@ -96,9 +79,36 @@ type SpectrumAnalyser struct {
 	hub *sseHub
 }
 
+// binFreqHz returns the centre frequency in Hz of FFT-shifted bin k,
+// using the runtime centre frequency stored in sa.centreHz.
+//
+// After FFT-shift, bin ordering is:
+//
+//	k=0              → centreHz - sampleRate/2  (lower edge)
+//	k=fftSize/2 - 1  → just below centreHz
+//	k=fftSize/2      → centreHz (centre)
+//	k=fftSize - 1    → centreHz + sampleRate/2 - binWidth (upper edge)
+func (sa *SpectrumAnalyser) binFreqHz(k int) float64 {
+	// Map shifted bin k back to raw FFT bin index, then to frequency.
+	// Shifted bin k corresponds to raw bin (k + fftSize/2) % fftSize.
+	rawBin := (k + fftSize/2) % fftSize
+	// Raw bin 0 = DC = centre frequency; positive bins = above centre.
+	// Frequency = centre + rawBin * binWidth  (for rawBin 0..N/2-1)
+	// Frequency = centre + (rawBin - N) * binWidth (for rawBin N/2..N-1, negative freqs)
+	binWidth := float64(iqSampleRate) / float64(fftSize)
+	if rawBin < fftSize/2 {
+		return float64(sa.centreHz) + float64(rawBin)*binWidth
+	}
+	return float64(sa.centreHz) + float64(rawBin-fftSize)*binWidth
+}
+
 // NewSpectrumAnalyser creates and starts a SpectrumAnalyser.
-func NewSpectrumAnalyser(hub *sseHub) *SpectrumAnalyser {
-	sa := &SpectrumAnalyser{hub: hub}
+// centreHz is the IQ centre frequency in Hz (from CENTRE_HZ / -centre-hz).
+func NewSpectrumAnalyser(hub *sseHub, centreHz int) *SpectrumAnalyser {
+	if centreHz == 0 {
+		centreHz = iqCentreHz
+	}
+	sa := &SpectrumAnalyser{hub: hub, centreHz: centreHz}
 	// Precompute Hann window
 	for i := 0; i < fftSize; i++ {
 		sa.window[i] = 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftSize-1)))
@@ -227,8 +237,8 @@ func (sa *SpectrumAnalyser) flush() {
 	payload, _ := json.Marshal(specPayload{
 		Bins:      b64,
 		BinCount:  fftBins,
-		FreqStart: binFreqHz(0),
-		FreqEnd:   binFreqHz(fftBins - 1),
+		FreqStart: sa.binFreqHz(0),
+		FreqEnd:   sa.binFreqHz(fftBins - 1),
 		BinWidth:  float64(iqSampleRate) / float64(fftSize),
 	})
 

@@ -169,8 +169,8 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		jsonResponse(w, specResp{
 			Bins:      bins,
 			BinCount:  len(bins),
-			FreqStart: binFreqHz(0),
-			FreqEnd:   binFreqHz(len(bins) - 1),
+			FreqStart: specAnalyser.binFreqHz(0),
+			FreqEnd:   specAnalyser.binFreqHz(len(bins) - 1),
 			BinWidth:  float64(iqSampleRate) / float64(fftSize),
 		})
 	})
@@ -292,7 +292,7 @@ func toMinimalSSE(msg string) string {
 	}
 
 	type minimalStrike struct {
-		Time          string  `json:"time"`           // HH:MM:SS.mmm UTC
+		Time          string  `json:"time"` // HH:MM:SS.mmm UTC
 		PeakAmplitude float64 `json:"peak_amplitude"`
 		SNRdB         float64 `json:"snr_db"`
 		DurationMs    float64 `json:"duration_ms"`

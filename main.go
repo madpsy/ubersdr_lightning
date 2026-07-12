@@ -96,7 +96,7 @@ func main() {
 	go hub.runBroadcaster(ctx, strikeOut)
 
 	// Spectrum analyser — computes FFT every 5 s and broadcasts via SSE
-	specAnalyser := NewSpectrumAnalyser(hub)
+	specAnalyser := NewSpectrumAnalyser(hub, *centreHz)
 	specAnalyser.Start()
 	defer specAnalyser.Stop()
 

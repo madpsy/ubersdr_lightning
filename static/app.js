@@ -117,12 +117,18 @@ function drawSpectrum(bins, meta) {
     ctx.fillText(db + ' dB', PAD_L - 3, y + 3);
   }
 
-  // ── Frequency grid lines (every 5 kHz) ──
+  // ── Frequency grid lines ──
+  // Step size is chosen to give ~8–10 grid lines across the visible band,
+  // rounded to a "nice" power-of-10 multiple so labels are always round numbers.
   ctx.textAlign = 'center';
-  for (let f = 5000; f < freqEnd; f += 5000) {
-    if (f < freqStart) continue;
+  const rawStep = freqRange / 9;
+  const stepMag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const gridStep = Math.ceil(rawStep / stepMag) * stepMag;
+  // Start at the first grid line at or above freqStart
+  const gridStart = Math.ceil(freqStart / gridStep) * gridStep;
+  for (let f = gridStart; f < freqEnd; f += gridStep) {
     const x = PAD_L + ((f - freqStart) / freqRange) * plotW;
-    ctx.strokeStyle = f % 10000 === 0 ? 'rgba(42,63,90,0.9)' : 'rgba(30,45,66,0.6)';
+    ctx.strokeStyle = (f / gridStep) % 2 === 0 ? 'rgba(42,63,90,0.9)' : 'rgba(30,45,66,0.6)';
     ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
     ctx.fillStyle = 'rgba(107,127,153,0.7)';
     ctx.fillText((f / 1000).toFixed(0) + 'k', x, H - 3);
@@ -160,16 +166,17 @@ function drawSpectrum(bins, meta) {
   ctx.stroke();
 
   // ── Notable frequency markers ──
-  // Centre frequency is derived from the spectrum metadata (midpoint of band),
-  // so it correctly reflects any CENTRE_HZ override.
-  const centreFreq = meta ? Math.round((meta.freqStart + meta.freqEnd) / 2) : 25000;
-  const centreKHz  = (centreFreq / 1000).toFixed(0);
+  // All marker frequencies are derived from the spectrum metadata so they
+  // correctly reflect any CENTRE_HZ override (e.g. 200 kHz instead of 25 kHz).
+  const centreFreq  = meta ? Math.round((meta.freqStart + meta.freqEnd) / 2) : 25000;
+  const centreKHz   = (centreFreq / 1000).toFixed(0);
+  const quarterFreq = meta ? Math.round(meta.freqStart + freqRange * 0.25) : null;
+  const threeQFreq  = meta ? Math.round(meta.freqStart + freqRange * 0.75) : null;
   const markers = [
-    { f: 10000,      label: '10k',                    color: 'rgba(167,139,250,0.6)' },
-    { f: 20000,      label: '20k',                    color: 'rgba(167,139,250,0.6)' },
+    quarterFreq !== null ? { f: quarterFreq, label: (quarterFreq/1000).toFixed(0)+'k', color: 'rgba(167,139,250,0.6)' } : null,
     { f: centreFreq, label: centreKHz + 'k (centre)', color: 'rgba(245,200,66,0.8)' },
-    { f: 30000,      label: '30k',                    color: 'rgba(167,139,250,0.6)' },
-  ];
+    threeQFreq  !== null ? { f: threeQFreq,  label: (threeQFreq/1000).toFixed(0)+'k',  color: 'rgba(167,139,250,0.6)' } : null,
+  ].filter(Boolean);
   markers.forEach(({ f, label, color }) => {
     if (f < freqStart || f > freqEnd) return;
     const x = PAD_L + ((f - freqStart) / freqRange) * plotW;
