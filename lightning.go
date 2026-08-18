@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -253,6 +254,27 @@ type LightningDetector struct {
 
 	// sessionID is the active user_session_id for the WebSocket connection.
 	sessionID string
+
+	// connected reports whether the IQ WebSocket is currently up. Read by the
+	// MQTT publisher so Home Assistant can show stream health.
+	connected atomic.Bool
+
+	// noiseFloorBits is the live IIR noise floor, stored as float64 bits so it
+	// can be read without a lock. Updated once per IQ packet rather than per
+	// sample — at 48 kHz a per-sample atomic write would be pure overhead for a
+	// value nothing reads more than twice a minute.
+	noiseFloorBits atomic.Uint64
+}
+
+// Connected reports whether the IQ stream is currently connected.
+func (ld *LightningDetector) Connected() bool {
+	return ld.connected.Load()
+}
+
+// NoiseFloor returns the current IIR noise floor estimate (normalised envelope
+// units), or 0 before the first IQ packet has been processed.
+func (ld *LightningDetector) NoiseFloor() float64 {
+	return math.Float64frombits(ld.noiseFloorBits.Load())
 }
 
 // NewLightningDetector creates a LightningDetector with the given config.
@@ -323,6 +345,7 @@ func (ld *LightningDetector) Run(ctx context.Context) {
 		}
 
 		log.Printf("[lightning] IQ stream connected (%s)", wsAddr)
+		ld.connected.Store(true)
 
 		connCtx, connCancel := context.WithCancel(ctx)
 
@@ -354,6 +377,7 @@ func (ld *LightningDetector) Run(ctx context.Context) {
 		}()
 
 		ld.runDetectionLoop(ctx, connCtx, connCancel, conn, dec, readChRecv)
+		ld.connected.Store(false)
 
 		select {
 		case <-ctx.Done():
@@ -459,6 +483,10 @@ func (ld *LightningDetector) runDetectionLoop(
 			if ld.specAnalyser != nil {
 				ld.specAnalyser.AddSamples(pkt.pcm)
 			}
+
+			// Publish the current noise floor for status reporting (MQTT /
+			// Home Assistant). Once per packet keeps it cheap.
+			ld.noiseFloorBits.Store(math.Float64bits(noiseFloor))
 
 			// Compute envelope for this packet
 			env := envelope(pkt.pcm)

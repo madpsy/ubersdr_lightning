@@ -23,6 +23,7 @@ Connects to UberSDR in `iq48` mode (48 kHz IQ, centred at 25 kHz, covering 1–4
 - **SSE live feed** — two-message protocol: metadata (~150 bytes) + waveform (~7.5 KB) as separate named events
 - **REST API** — `GET /api/strikes?n=N` returns full strike history including waveforms
 - **Proxy-aware** — reads `X-Forwarded-Prefix` header from UberSDR's addon proxy; all JS API calls are correctly prefixed
+- **MQTT + Home Assistant** — publishes strikes and detector status through UberSDR's MQTT connection, and appears in Home Assistant as its own device. Always on, no configuration ([details](#mqtt--home-assistant))
 
 ---
 
@@ -197,6 +198,96 @@ curl -N 'http://localhost:6097/api/events?minimal=1'
 
 ---
 
+## MQTT / Home Assistant
+
+If the UberSDR receiver has MQTT enabled, this addon publishes through it
+automatically. **There is nothing to configure and nothing to add to
+`docker-compose.yml`** — the ingest endpoint is derived from `UBERSDR_URL`, which
+the container already has.
+
+When the receiver has MQTT turned off, or this container is not a recognised
+addon, publishing is silently skipped and the detector runs exactly as before. No
+publish failure is ever fatal to detection.
+
+### Topics
+
+Published through UberSDR's addon ingest port, under the receiver's own topic
+prefix (`ubersdr/metrics` by default):
+
+| Topic | Retained | Contents |
+|---|---|---|
+| `…/addons/lightning/strikes` | no | One message per detected sferic |
+| `…/addons/lightning/summary` | yes | Rolling detector state, refreshed every 30 s |
+| `…/addons/lightning/status` | yes | `online` / `offline`, maintained by UberSDR |
+
+A strike message (the waveform is deliberately omitted — it is far too large for
+a message bus, and remains available over `GET /api/strikes` for TDOA use):
+
+```json
+{
+  "id": "6f1e…",
+  "timestamp_ns": 1755512345678901234,
+  "time": "2026-08-18T13:59:05.678901234Z",
+  "peak_amplitude": 0.42,
+  "noise_floor": 0.0013,
+  "snr_db": 50.2,
+  "duration_ms": 1.8,
+  "saturated": false
+}
+```
+
+The retained summary:
+
+```json
+{
+  "strikes_total": 1284,
+  "strikes_last_hour": 37,
+  "storm_active": true,
+  "iq_connected": true,
+  "last_strike_utc": "2026-08-18T13:59:05Z",
+  "last_snr_db": 50.2,
+  "last_peak_amplitude": 0.42,
+  "noise_floor_db": -57.7
+}
+```
+
+### Home Assistant
+
+When the receiver has Home Assistant discovery enabled, the addon declares its
+entities automatically and appears as its own device — nested under the receiver,
+with a link straight through to this web UI:
+
+| Entity | Type | Notes |
+|---|---|---|
+| Strike Rate | sensor | Strikes in the last hour |
+| Strikes Detected | sensor | Running total, `total_increasing` |
+| Last Strike SNR | sensor | dB |
+| Last Strike | sensor | Timestamp |
+| Noise Floor | sensor | Live IIR estimate in dBFS, diagnostic |
+| Storm Activity | binary sensor | On while strikes have arrived in the last 10 minutes |
+| IQ Stream | binary sensor | Connectivity to the receiver, diagnostic |
+
+All seven read from the single retained `summary` topic, so Home Assistant has
+values the moment it subscribes rather than waiting for the next strike.
+
+Entities go unavailable if either the receiver or this addon stops publishing, so
+a dead detector shows as unavailable rather than leaving a stale strike count
+looking current.
+
+### Overriding the endpoint
+
+Only needed if the operator has changed `mqtt.addon_ingest.port` from its default
+of 6926 on the receiver:
+
+```yaml
+environment:
+  UBERSDR_INGEST_URL: "http://ubersdr:7000"
+```
+
+See `addon_mqtt.md` in the ka9q_ubersdr repository for the full ingest API.
+
+---
+
 ## TDOA Cross-Correlation
 
 Each `StrikeEvent` carries a GPS-synchronised `timestamp_ns` (nanosecond Unix timestamp from UberSDR's v2 PCM packet header) and a `waveform` array of ~960 normalised envelope samples (±10 ms at 48 kHz).
@@ -238,6 +329,7 @@ ubersdr_lightning/
 ├── main.go           — entry point, flag/env parsing
 ├── lightning.go      — IQ stream consumer, sferic detector, SSE hub
 ├── pcm_decoder.go    — UberSDR v2 PCM binary packet decoder (zstd, IQ helpers)
+├── mqtt.go           — MQTT publishing + Home Assistant entities via UberSDR
 ├── web.go            — HTTP server (SSE, REST API, embedded static files)
 ├── go.mod            — Go module (github.com/madpsy/ubersdr_lightning)
 ├── static/

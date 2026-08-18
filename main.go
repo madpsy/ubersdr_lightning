@@ -93,7 +93,6 @@ func main() {
 
 	// SSE hub — fans out StrikeEvents and spectrum frames to browser clients
 	hub := newSSEHub()
-	go hub.runBroadcaster(ctx, strikeOut)
 
 	// Spectrum analyser — computes FFT every 5 s and broadcasts via SSE
 	specAnalyser := NewSpectrumAnalyser(hub, *centreHz)
@@ -110,6 +109,19 @@ func main() {
 		MaxStrikesPerMin: *maxStrikesPerMin,
 	}
 	det := NewLightningDetector(cfg, history, strikeOut, specAnalyser)
+
+	// MQTT publishing through UberSDR's addon ingest port. Always on and needs
+	// no configuration — the endpoint is derived from UBERSDR_URL. When the
+	// receiver has MQTT disabled, or this container is not a recognised addon,
+	// the publisher stays dormant and the detector is unaffected.
+	//
+	// It sits between the detector and the SSE hub, so the hub receives exactly
+	// what it did before and neither component knows MQTT exists.
+	mqttPub := NewMQTTPublisher(*ubersdrURL, history, det)
+	hubIn := make(chan StrikeEvent, 64)
+	go mqttPub.Run(ctx, strikeOut, hubIn)
+	go hub.runBroadcaster(ctx, hubIn)
+
 	go det.Run(ctx)
 
 	// HTTP server (SSE + REST API + static UI)
