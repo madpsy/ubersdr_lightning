@@ -163,6 +163,25 @@
     td.ts-col { color: var(--muted); } td.seq-col { color: var(--dim); }
     .no-data { text-align: center; color: var(--muted); font-style: italic; padding: 28px; }
 
+    /* ── Trigger candidate log ── */
+    #cand-wrap { overflow-x: auto; overflow-y: auto; max-height: 320px; -webkit-overflow-scrolling: touch; }
+    #cand-summary { padding: 8px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
+    .cand-chip { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border2); background: var(--bg2); color: var(--muted); font-family: var(--mono); font-size: 10px; }
+    .cand-chip b { color: var(--text); }
+    .reason-badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; font-family: var(--font); white-space: nowrap; }
+    .r-accepted     { background: rgba(34,211,160,0.15);  color: var(--green);  border: 1px solid rgba(34,211,160,0.35); }
+    .r-too_short    { background: rgba(255,140,66,0.12);  color: var(--orange); border: 1px solid rgba(255,140,66,0.35); }
+    .r-too_long     { background: rgba(245,200,66,0.12);  color: var(--gold);   border: 1px solid rgba(245,200,66,0.35); }
+    .r-runaway      { background: rgba(255,77,109,0.12);  color: var(--red);    border: 1px solid rgba(255,77,109,0.35); }
+    .r-peak_late    { background: rgba(167,139,250,0.12); color: var(--purple); border: 1px solid rgba(167,139,250,0.35); }
+    .r-refractory   { background: rgba(56,189,248,0.12);  color: var(--blue);   border: 1px solid rgba(56,189,248,0.35); }
+    .r-rate_limited { background: rgba(255,77,109,0.12);  color: var(--red);    border: 1px solid rgba(255,77,109,0.35); }
+    #cand-pager { padding: 8px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: center; gap: 14px; }
+    #cand-pager button { background: var(--surface2); border: 1px solid var(--border2); color: var(--text); border-radius: 6px; padding: 4px 12px; font-size: 11px; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
+    #cand-pager button:disabled { opacity: 0.35; cursor: default; }
+    #cand-pager button:not(:disabled):hover { border-color: var(--gold); color: var(--gold); }
+    #cand-page-info { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
     /* ── Responsive: hide header stat pills on small screens ── */
     @media (max-width: 480px) {
       header { padding: 0 12px; gap: 10px; }
@@ -188,6 +207,7 @@
       .stats-row { grid-column: 1 / 2; }
       #activity-card { grid-column: 1 / 2; }
       #table-card { grid-column: 1 / 2; }
+      #cand-card { grid-column: 1 / 2; }
       .right-panel { grid-column: 2 / 3; grid-row: 1 / 5; }
       .stat-card .s-value { font-size: 28px; }
       #activity-canvas { height: 90px; }
@@ -369,6 +389,38 @@
           <tr><td colspan="6" class="no-data">No strikes yet</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Trigger candidate log -->
+  <div class="card" id="cand-card">
+    <div class="card-hdr">
+      <span class="icon">🔍</span> Trigger Candidates
+      <span class="badge" id="cand-badge">waiting…</span>
+    </div>
+    <div id="cand-summary" style="display:none"></div>
+    <div id="cand-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>UTC Time</th>
+            <th>Peak Amp</th>
+            <th>Noise Floor</th>
+            <th>SNR (dB)</th>
+            <th>Duration</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="cand-tbody">
+          <tr><td colspan="7" class="no-data">No trigger candidates yet — nothing has crossed the threshold</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="cand-pager" style="display:none">
+      <button id="cand-prev">‹ Prev</button>
+      <span id="cand-page-info">Page 1 of 1</span>
+      <button id="cand-next">Next ›</button>
     </div>
   </div>
 

@@ -52,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSpectrum();
   connect();
   initReceiverMap();
+  initCandidates();
   setInterval(drawActivity, 1000);
   // Spectrum canvas: no resize handler needed — CSS width:100% + height:auto
   // scales the canvas element automatically without redrawing.
@@ -280,6 +281,12 @@ function openApiModal() {
           desc: 'Strips the <span class="hl">waveform</span> field, reducing payload from ~7.5 KB to ~150 bytes per strike. Combinable: <span class="hl">?since=1h&amp;minimal=1</span>.',
           example: `curl "${base}/api/strikes?minimal=1&since=1h"`,
           response: `[{"timestamp_ns":1718123456789,"time":"14:23:01.456","peak_amplitude":0.42,"snr_db":18.3,\n  "duration_ms":3.1,"noise_floor":0.023,"saturated":false}]`
+        },
+        {
+          badge: 'get', method: 'GET', path: '/api/candidates',
+          desc: 'Trigger-candidate diagnostic log: every threshold crossing and why it was <span class="hl">accepted</span> or rejected (<span class="hl">too_short</span>, <span class="hl">too_long</span>, <span class="hl">runaway</span>, <span class="hl">peak_late</span>, <span class="hl">refractory</span>, <span class="hl">rate_limited</span>). 250-entry ring buffer, newest first. Paginate with <span class="hl">?page=P&amp;per_page=N</span> (default 1 &amp; 25). <span class="hl">totals</span> are lifetime per-reason counters.',
+          example: `curl "${base}/api/candidates?page=1&per_page=25"`,
+          response: `{"candidates":[{"seq":42,"timestamp_ns":1718123456789,"peak_amplitude":0.0912,"noise_floor":0.0084,\n  "threshold":0.0672,"snr_db":20.7,"duration_samples":31,"duration_ms":0.65,"accepted":false,"reason":"too_short"}],\n "total":42,"page":1,"per_page":25,"total_pages":2,"totals":{"accepted":3,"too_short":39}}`
         },
         {
           badge: 'get', method: 'GET', path: '/api/spectrum',
@@ -709,6 +716,103 @@ function rebuildGallery() {
       drawWaveformCanvas(canvas, waveform, false);
     });
   });
+}
+
+// ── Trigger candidate log ──────────────────────────────────────────────────
+// Every threshold crossing the detector saw, with the reason it was accepted
+// or rejected. Served paginated from a 250-entry ring buffer on the server.
+const CAND_PER_PAGE = 25;
+let candPage       = 1;
+let candTotalPages = 1;
+
+const REASON_LABELS = {
+  accepted:     'ACCEPTED',
+  too_short:    'TOO SHORT',
+  too_long:     'TOO LONG',
+  runaway:      'RUNAWAY',
+  peak_late:    'PEAK LATE',
+  refractory:   'REFRACTORY',
+  rate_limited: 'RATE LIMIT',
+};
+
+function initCandidates() {
+  document.getElementById('cand-prev').addEventListener('click', () => {
+    if (candPage > 1) { candPage--; loadCandidates(); }
+  });
+  document.getElementById('cand-next').addEventListener('click', () => {
+    if (candPage < candTotalPages) { candPage++; loadCandidates(); }
+  });
+  loadCandidates();
+  // Auto-refresh page 1 only, so paging back through history isn't
+  // yanked around as new candidates arrive.
+  setInterval(() => { if (candPage === 1) loadCandidates(); }, 5000);
+}
+
+async function loadCandidates() {
+  try {
+    const resp = await fetch(`${BASE}/api/candidates?page=${candPage}&per_page=${CAND_PER_PAGE}`);
+    if (!resp.ok) return;
+    renderCandidates(await resp.json());
+  } catch(_) {}
+}
+
+function reasonBadge(reason) {
+  const label = REASON_LABELS[reason] || reason.toUpperCase();
+  return `<span class="reason-badge r-${reason}">${label}</span>`;
+}
+
+function renderCandidates(data) {
+  const tbody = document.getElementById('cand-tbody');
+  const badge = document.getElementById('cand-badge');
+  const summary = document.getElementById('cand-summary');
+  const pager = document.getElementById('cand-pager');
+  if (!tbody) return;
+
+  candTotalPages = data.total_pages || 1;
+  if (candPage > candTotalPages) candPage = candTotalPages;
+
+  // Summary chips: lifetime totals per reason (keep counting after the ring
+  // buffer wraps, so sustained rejection storms stay visible).
+  const totals = data.totals || {};
+  const order = ['accepted', 'too_short', 'too_long', 'runaway', 'peak_late', 'refractory', 'rate_limited'];
+  const chips = order
+    .filter(r => totals[r] > 0)
+    .map(r => `<span class="cand-chip">${reasonBadge(r)} <b>${totals[r]}</b></span>`);
+  if (chips.length > 0) {
+    summary.innerHTML = chips.join('');
+    summary.style.display = 'flex';
+  } else {
+    summary.style.display = 'none';
+  }
+
+  const cands = data.candidates || [];
+  const lifetime = order.reduce((sum, r) => sum + (totals[r] || 0), 0);
+  badge.textContent = `${lifetime} total · last ${data.total} kept`;
+
+  if (cands.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No trigger candidates yet — nothing has crossed the threshold</td></tr>';
+    pager.style.display = 'none';
+    return;
+  }
+
+  tbody.innerHTML = cands.map(c => {
+    const utc = new Date(c.timestamp_ns / 1e6).toISOString().replace('T', ' ').slice(0, 23);
+    const db  = c.snr_db || 0;
+    return `<tr>
+      <td class="seq-col">${c.seq}</td>
+      <td class="ts-col">${utc}</td>
+      <td>${c.peak_amplitude.toFixed(5)}</td>
+      <td>${c.noise_floor.toFixed(5)}</td>
+      <td class="${snrClass(db)}">${db.toFixed(1)}</td>
+      <td>${c.duration_ms.toFixed(2)} ms</td>
+      <td>${reasonBadge(c.reason)}</td>
+    </tr>`;
+  }).join('');
+
+  pager.style.display = candTotalPages > 1 ? 'flex' : 'none';
+  document.getElementById('cand-page-info').textContent = `Page ${candPage} of ${candTotalPages}`;
+  document.getElementById('cand-prev').disabled = candPage <= 1;
+  document.getElementById('cand-next').disabled = candPage >= candTotalPages;
 }
 
 // ── Table ──────────────────────────────────────────────────────────────────

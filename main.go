@@ -88,6 +88,9 @@ func main() {
 	// Shared strike history ring buffer
 	history := &StrikeHistory{}
 
+	// Trigger-candidate diagnostic log (250-entry ring, shown in the web UI)
+	candidates := NewCandidateLog()
+
 	// Channel from detector → SSE broadcaster
 	strikeOut := make(chan StrikeEvent, 64)
 
@@ -108,7 +111,7 @@ func main() {
 		RefractoryMs:     *refractoryMs,
 		MaxStrikesPerMin: *maxStrikesPerMin,
 	}
-	det := NewLightningDetector(cfg, history, strikeOut, specAnalyser)
+	det := NewLightningDetector(cfg, history, candidates, strikeOut, specAnalyser)
 
 	// MQTT publishing through UberSDR's addon ingest port. Always on and needs
 	// no configuration — the endpoint is derived from UBERSDR_URL. When the
@@ -126,7 +129,7 @@ func main() {
 
 	// HTTP server (SSE + REST API + static UI)
 	go func() {
-		if err := startHTTPServer(*listenAddr, history, hub, specAnalyser); err != nil {
+		if err := startHTTPServer(*listenAddr, history, candidates, hub, specAnalyser); err != nil {
 			log.Fatalf("[main] HTTP server: %v", err)
 		}
 	}()

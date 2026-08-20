@@ -243,8 +243,9 @@ type DetectorConfig struct {
 
 // LightningDetector connects to UberSDR in iq48 mode and detects sferics.
 type LightningDetector struct {
-	cfg     DetectorConfig
-	history *StrikeHistory
+	cfg        DetectorConfig
+	history    *StrikeHistory
+	candidates *CandidateLog
 
 	// strikeOut receives every detected StrikeEvent for broadcast to SSE clients.
 	strikeOut chan StrikeEvent
@@ -278,7 +279,7 @@ func (ld *LightningDetector) NoiseFloor() float64 {
 }
 
 // NewLightningDetector creates a LightningDetector with the given config.
-func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut chan StrikeEvent, specAnalyser *SpectrumAnalyser) *LightningDetector {
+func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, candidates *CandidateLog, strikeOut chan StrikeEvent, specAnalyser *SpectrumAnalyser) *LightningDetector {
 	if cfg.CentreHz == 0 {
 		cfg.CentreHz = iqCentreHz
 	}
@@ -297,6 +298,7 @@ func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, strikeOut 
 	return &LightningDetector{
 		cfg:          cfg,
 		history:      history,
+		candidates:   candidates,
 		strikeOut:    strikeOut,
 		specAnalyser: specAnalyser,
 	}
@@ -460,6 +462,27 @@ func (ld *LightningDetector) runDetectionLoop(
 		postCapLeft   int       // remaining post-trigger samples to collect
 	)
 
+	// logCandidate records the outcome of a threshold crossing in the
+	// candidate diagnostic log (web UI / GET /api/candidates). Called exactly
+	// once per candidate, at the point where it is accepted or rejected.
+	logCandidate := func(reason string, threshold float64) {
+		if ld.candidates == nil {
+			return
+		}
+		ld.candidates.Add(CandidateEvent{
+			TimestampNs:     trigPeakTs,
+			TimestampUTC:    time.Unix(0, trigPeakTs).UTC(),
+			PeakAmplitude:   trigPeak,
+			NoiseFloor:      noiseFloor,
+			Threshold:       threshold,
+			SNRdB:           20 * math.Log10(trigPeak/noiseFloor),
+			DurationSamples: trigDuration,
+			DurationMs:      float64(trigDuration) * 1000 / iqSampleRate,
+			Accepted:        reason == reasonAccepted,
+			Reason:          reason,
+		})
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -546,6 +569,7 @@ func (ld *LightningDetector) runDetectionLoop(
 						}
 						// Guard against runaway triggers (continuous interference)
 						if trigDuration > maxSfericSamples*3 {
+							logCandidate(reasonRunaway, threshold)
 							state = stateIdle
 							trigDuration = 0
 						}
@@ -553,6 +577,11 @@ func (ld *LightningDetector) runDetectionLoop(
 						// Envelope dropped below threshold — sferic ended.
 						// Validate duration gate.
 						if trigDuration < minSfericSamples || trigDuration > maxSfericSamples {
+							if trigDuration < minSfericSamples {
+								logCandidate(reasonTooShort, threshold)
+							} else {
+								logCandidate(reasonTooLong, threshold)
+							}
 							state = stateIdle
 							break
 						}
@@ -564,6 +593,7 @@ func (ld *LightningDetector) runDetectionLoop(
 						halfDur := trigDuration / 2
 						if trigPeakIdx > halfDur {
 							// Peak too late — likely a multi-cycle burst, not a sferic
+							logCandidate(reasonPeakLate, threshold)
 							state = stateIdle
 							break
 						}
@@ -592,6 +622,7 @@ func (ld *LightningDetector) runDetectionLoop(
 							if lastStrikeTs > 0 && trigPeakTs-lastStrikeTs < refractoryNs {
 								log.Printf("[lightning] refractory: skipping trigger %.2fms after last strike",
 									float64(trigPeakTs-lastStrikeTs)/1e6)
+								logCandidate(reasonRefractory, threshold)
 								state = stateIdle
 								trigDuration = 0
 								break
@@ -612,6 +643,7 @@ func (ld *LightningDetector) runDetectionLoop(
 										ld.cfg.MaxStrikesPerMin)
 									rateLimited = true
 								}
+								logCandidate(reasonRateLimit, threshold)
 								state = stateIdle
 								trigDuration = 0
 								break
@@ -630,6 +662,7 @@ func (ld *LightningDetector) runDetectionLoop(
 							)
 							lastStrikeTs = trigPeakTs
 							recentStrikes = append(recentStrikes, trigPeakTs)
+							logCandidate(reasonAccepted, threshold)
 	
 							ld.history.Add(strike)
 							select {

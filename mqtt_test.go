@@ -220,7 +220,7 @@ func TestPublisherDeclaresAndPublishes(t *testing.T) {
 	t.Setenv("UBERSDR_INGEST_URL", srv.URL)
 
 	history := &StrikeHistory{}
-	det := NewLightningDetector(DetectorConfig{UberSDRURL: "ws://ubersdr:8080/ws"}, history, nil, nil)
+	det := NewLightningDetector(DetectorConfig{UberSDRURL: "ws://ubersdr:8080/ws"}, history, nil, nil, nil)
 	det.connected.Store(true)
 	det.noiseFloorBits.Store(math.Float64bits(0.001)) // as if the IIR had settled
 

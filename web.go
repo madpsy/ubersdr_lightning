@@ -5,6 +5,7 @@
 //	GET  /                        → static/index.html (rendered as Go template with BasePath)
 //	GET  /static/*                → embedded static files
 //	GET  /api/strikes?n=N         → JSON array of recent strikes (includes waveforms)
+//	GET  /api/candidates          → paginated trigger-candidate diagnostic log
 //	GET  /api/spectrum            → JSON: latest FFT spectrum (4096 bins, dBFS, 1–49 kHz)
 //	GET  /api/status              → JSON status (strike count, server time)
 //	GET  /api/events              → SSE stream: full StrikeEvents + spectrum + waveform frames
@@ -37,7 +38,7 @@ import (
 var staticFiles embed.FS
 
 // startHTTPServer starts the HTTP server and blocks until it returns an error.
-func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnalyser *SpectrumAnalyser) error {
+func startHTTPServer(addr string, history *StrikeHistory, candidates *CandidateLog, hub *sseHub, specAnalyser *SpectrumAnalyser) error {
 	mux := http.NewServeMux()
 
 	// Parse index.html as a Go template so BasePath can be injected.
@@ -149,6 +150,58 @@ func startHTTPServer(addr string, history *StrikeHistory, hub *sseHub, specAnaly
 		}
 
 		jsonResponse(w, strikes)
+	})
+
+	// GET /api/candidates[?page=P][&per_page=N]
+	//
+	// Trigger-candidate diagnostic log: every threshold crossing and why it
+	// was accepted or rejected (too_short, too_long, runaway, peak_late,
+	// refractory, rate_limited). Newest first, from a 250-entry ring buffer.
+	//
+	// ?page=P     — 1-based page number (default 1)
+	// ?per_page=N — entries per page (default 25, max 250)
+	//
+	// Response:
+	//   {"candidates":[...], "total":N, "page":P, "per_page":N,
+	//    "total_pages":T, "totals":{"accepted":n, "too_short":n, ...}}
+	//
+	// "total" is the ring-buffer occupancy (max 250); "totals" are lifetime
+	// per-reason counters since process start (they keep counting after the
+	// ring wraps).
+	mux.HandleFunc("/api/candidates", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		page := 1
+		if s := r.URL.Query().Get("page"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				page = v
+			}
+		}
+		perPage := 25
+		if s := r.URL.Query().Get("per_page"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				if v > candidateLogDepth {
+					v = candidateLogDepth
+				}
+				perPage = v
+			}
+		}
+
+		events, total := candidates.Page(page, perPage)
+		totalPages := (total + perPage - 1) / perPage
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		jsonResponse(w, map[string]interface{}{
+			"candidates":  events,
+			"total":       total,
+			"page":        page,
+			"per_page":    perPage,
+			"total_pages": totalPages,
+			"totals":      candidates.Totals(),
+		})
 	})
 
 	// GET /api/spectrum — latest FFT spectrum as JSON (for polling clients)
