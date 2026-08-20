@@ -24,9 +24,9 @@ const candidateLogDepth = 250
 // real StrikeEvents.
 const (
 	reasonAccepted   = "accepted"
-	reasonTooShort   = "too_short"    // duration < minSfericSamples (1 ms)
-	reasonTooLong    = "too_long"     // duration > maxSfericSamples (10 ms)
-	reasonRunaway    = "runaway"      // duration > 3× maxSfericSamples — continuous interference
+	reasonTooShort   = "too_short"    // duration below MinSfericMs
+	reasonTooLong    = "too_long"     // duration above MaxSfericMs
+	reasonRunaway    = "runaway"      // duration above runawayFactor × MaxSfericMs — continuous interference
 	reasonPeakLate   = "peak_late"    // peak in second half of window — multi-cycle burst
 	reasonRefractory = "refractory"   // within RefractoryMs of the last strike
 	reasonRateLimit  = "rate_limited" // > MaxStrikesPerMin in the last 60 s

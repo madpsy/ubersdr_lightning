@@ -3,7 +3,7 @@
 // Connects to UberSDR in iq48 mode (48 kHz IQ, centred at 25 kHz, covering
 // roughly 1–49 kHz) and detects lightning sferics using:
 //
-//  1. Warm-up period: IIR noise floor settles for warmupSeconds before
+//  1. Warm-up period: IIR noise floor settles for WarmupSeconds before
 //     the trigger is armed, preventing false triggers on connection.
 //  2. Envelope detection: √(I²+Q²) per sample pair
 //  3. Adaptive IIR noise floor: slow-tracking background level
@@ -46,7 +46,7 @@ const (
 
 	// Warm-up: number of seconds to settle the IIR noise floor before arming
 	// the trigger.  Prevents false triggers immediately after connection.
-	warmupSeconds = 5
+	defaultWarmupSeconds = 5
 
 	// Saturation detection: when both I and Q rail at ±32767, the envelope
 	// = √2 ≈ 1.4142. A peak above this threshold indicates ADC clipping.
@@ -67,12 +67,26 @@ const (
 	// drivers, motors) does not.  Raise further if false triggers persist.
 	defaultThresholdRatio = 8.0
 
-	// Sferic duration gates (samples at 48 kHz)
-	// Minimum 1 ms (48 samples) — rejects very short noise spikes.
-	// Real sferics are typically 1–5 ms; the 10 ms maximum catches the
-	// longer tail of close strikes.
-	minSfericSamples = 48  // 1.0 ms (was 24 = 0.5 ms)
-	maxSfericSamples = 480 // 10 ms
+	// Sferic duration gates.
+	//
+	// A sferic is impulsive.  Observed through a channel of bandwidth B its
+	// envelope is only ~1/B wide — at 48 kHz that is ≈21 µs, i.e. ONE sample.
+	// Measured candidates run 1–4 samples, with the width growing slightly as
+	// amplitude rises (more of the same impulse response clears the threshold).
+	//
+	// The widely quoted "sferics are 1–5 ms" figure is a narrowband, or
+	// post-propagation dispersed-waveform, measurement.  It does not describe
+	// the wideband envelope computed here, and a minimum built on it rejects
+	// every real strike while admitting only sustained interference.  The
+	// minimum therefore defaults to a single sample; the MAXIMUM does the
+	// useful work of rejecting anything that is not impulsive.
+	defaultMinSfericMs = 0.02 // ≈1 sample at 48 kHz
+	defaultMaxSfericMs = 10.0 // 480 samples at 48 kHz
+
+	// Runaway guard: abandon an armed window once it exceeds this multiple of
+	// the maximum sferic duration (continuous interference never comes back
+	// down, and would otherwise hold the detector armed indefinitely).
+	runawayFactor = 3
 
 	// Refractory period: after a confirmed strike, ignore new triggers for
 	// this many milliseconds.  Real lightning at a single station cannot
@@ -84,15 +98,8 @@ const (
 	// 20/min = one every 3 s on average — generous for active storms.
 	defaultMaxStrikesPerMin = 20
 
-	// Single-peak validation: the envelope must fall back below
-	// peakAmplitude × peakDecayRatio before the end of the armed window.
-	// This rejects multi-cycle interference (e.g. 50 Hz transients) that
-	// would show multiple peaks above threshold.
-	peakDecayRatio = 0.5
-
-	// Waveform capture window: captureMs milliseconds each side of the peak
-	captureMs      = 10 // milliseconds
-	captureSamples = captureMs * iqSampleRate / 1000 // samples per side
+	// Waveform capture window: milliseconds each side of the peak
+	defaultCaptureMs = 10
 
 	// Strike history ring buffer depth
 	strikeHistoryDepth = 1000
@@ -239,6 +246,42 @@ type DetectorConfig struct {
 	// detected per minute, further triggers are suppressed and a warning is
 	// logged until the rate drops. (default: 20)
 	MaxStrikesPerMin int
+
+	// MinSfericMs / MaxSfericMs bound how long the envelope may stay above
+	// the threshold for a candidate to be accepted (default: 0.02–10 ms).
+	//
+	// Both are converted to whole samples at iqSampleRate, rounded, and
+	// clamped to at least 1.  See the defaultMinSfericMs comment above for
+	// why the minimum is one sample and not the "1 ms" that intuition (and
+	// the older code) suggests.
+	MinSfericMs float64
+	MaxSfericMs float64
+
+	// DisablePeakCheck turns off single-peak validation (the requirement that
+	// the peak fall in the first half of the above-threshold window).  The
+	// check assumes a fast rise and slow decay; on candidates only a few
+	// samples wide it has little to say, and it can reject genuine
+	// multi-peaked sferics.  Zero value keeps the check enabled.
+	DisablePeakCheck bool
+
+	// WarmupSeconds is how long the IIR noise floor settles before the trigger
+	// arms, preventing false triggers on connection. (default: 5)
+	WarmupSeconds int
+
+	// CaptureMs is the waveform capture window each side of the peak, in
+	// milliseconds. (default: 10)
+	CaptureMs int
+}
+
+// msToSamples converts a millisecond duration to whole samples at
+// iqSampleRate, rounding to nearest and clamping to a minimum of 1 — a gate
+// of zero samples would make the comparison it guards meaningless.
+func msToSamples(ms float64) int {
+	n := int(math.Round(ms * iqSampleRate / 1000.0))
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // LightningDetector connects to UberSDR in iq48 mode and detects sferics.
@@ -294,6 +337,18 @@ func NewLightningDetector(cfg DetectorConfig, history *StrikeHistory, candidates
 	}
 	if cfg.MaxStrikesPerMin == 0 {
 		cfg.MaxStrikesPerMin = defaultMaxStrikesPerMin
+	}
+	if cfg.MinSfericMs == 0 {
+		cfg.MinSfericMs = defaultMinSfericMs
+	}
+	if cfg.MaxSfericMs == 0 {
+		cfg.MaxSfericMs = defaultMaxSfericMs
+	}
+	if cfg.WarmupSeconds == 0 {
+		cfg.WarmupSeconds = defaultWarmupSeconds
+	}
+	if cfg.CaptureMs == 0 {
+		cfg.CaptureMs = defaultCaptureMs
 	}
 	return &LightningDetector{
 		cfg:          cfg,
@@ -413,8 +468,19 @@ func (ld *LightningDetector) runDetectionLoop(
 	// Detector state
 	// ---------------------------------------------------------------------------
 
+	// Detector gates, resolved from config once per connection.
+	minSfericSamples := msToSamples(ld.cfg.MinSfericMs)
+	maxSfericSamples := msToSamples(ld.cfg.MaxSfericMs)
+	captureSamples := ld.cfg.CaptureMs * iqSampleRate / 1000
+	if captureSamples < 1 {
+		captureSamples = 1
+	}
+	log.Printf("[lightning] duration gate: %.3f–%.3f ms (%d–%d samples), peak check=%v, capture=±%d ms",
+		ld.cfg.MinSfericMs, ld.cfg.MaxSfericMs, minSfericSamples, maxSfericSamples,
+		!ld.cfg.DisablePeakCheck, ld.cfg.CaptureMs)
+
 	// IIR noise floor — initialised to a small positive value.
-	// The warm-up period (warmupSeconds) lets this settle before arming.
+	// The warm-up period lets this settle before arming.
 	noiseFloor := 0.001
 
 	// Pre-trigger ring buffer: holds the last captureSamples envelope values
@@ -427,10 +493,8 @@ func (ld *LightningDetector) runDetectionLoop(
 	preTrigTs := make([]int64, captureSamples)
 
 	// Warm-up: count samples until the noise floor has settled.
-	// warmupSamples = warmupSeconds × iqSampleRate
-	const warmupSamples = warmupSeconds * iqSampleRate
-	warmupRemaining := warmupSamples
-	log.Printf("[lightning] warming up noise floor for %d s…", warmupSeconds)
+	warmupRemaining := ld.cfg.WarmupSeconds * iqSampleRate
+	log.Printf("[lightning] warming up noise floor for %d s…", ld.cfg.WarmupSeconds)
 
 	// Trigger state machine
 	type trigState int
@@ -568,7 +632,7 @@ func (ld *LightningDetector) runDetectionLoop(
 							trigPeakIdx = trigArmIdx
 						}
 						// Guard against runaway triggers (continuous interference)
-						if trigDuration > maxSfericSamples*3 {
+						if trigDuration > maxSfericSamples*runawayFactor {
 							logCandidate(reasonRunaway, threshold)
 							state = stateIdle
 							trigDuration = 0
@@ -591,7 +655,7 @@ func (ld *LightningDetector) runDetectionLoop(
 						// This rejects multi-cycle interference where the peak is
 						// near the end of the window.
 						halfDur := trigDuration / 2
-						if trigPeakIdx > halfDur {
+						if !ld.cfg.DisablePeakCheck && trigPeakIdx > halfDur {
 							// Peak too late — likely a multi-cycle burst, not a sferic
 							logCandidate(reasonPeakLate, threshold)
 							state = stateIdle

@@ -11,11 +11,18 @@
 //
 // Environment variables (override flags):
 //
-//	UBERSDR_URL      — UberSDR WebSocket URL
-//	WEB_PORT         — HTTP listen port (default 6097)
-//	CENTRE_HZ        — IQ centre frequency in Hz (default 25000)
-//	IIR_ALPHA        — IIR noise floor alpha (default 0.9999)
-//	THRESHOLD_RATIO  — trigger threshold ratio (default 2.0)
+//	UBERSDR_URL         — UberSDR WebSocket URL
+//	WEB_PORT            — HTTP listen port (default 6097)
+//	CENTRE_HZ           — IQ centre frequency in Hz (default 25000)
+//	IIR_ALPHA           — IIR noise floor alpha (default 0.9999)
+//	THRESHOLD_RATIO     — trigger threshold ratio (default 8.0)
+//	REFRACTORY_MS       — dead time after each strike (default 100)
+//	MAX_STRIKES_PER_MIN — rate limit before suppression (default 20)
+//	MIN_SFERIC_MS       — minimum above-threshold duration (default 0.02)
+//	MAX_SFERIC_MS       — maximum above-threshold duration (default 10)
+//	PEAK_CHECK          — single-peak validation on/off (default true)
+//	WARMUP_SECONDS      — noise floor settling time (default 5)
+//	CAPTURE_MS          — waveform window each side of peak (default 10)
 package main
 
 import (
@@ -55,6 +62,18 @@ func envIntOr(key string, def int) int {
 	return def
 }
 
+// envBoolOr accepts the forms strconv.ParseBool understands — 1/0, t/f,
+// true/false, and their capitalised variants. "yes"/"no" are not accepted and
+// fall back to def.
+func envBoolOr(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
 func main() {
 	var (
 		ubersdrURL       = flag.String("url", envOr("UBERSDR_URL", "ws://ubersdr:8080/ws"), "UberSDR WebSocket URL (env: UBERSDR_URL)")
@@ -64,6 +83,11 @@ func main() {
 		thresholdRatio   = flag.Float64("threshold", envFloat64Or("THRESHOLD_RATIO", defaultThresholdRatio), "Trigger threshold ratio — 8.0 = 18 dB above noise floor (env: THRESHOLD_RATIO)")
 		refractoryMs     = flag.Int("refractory-ms", envIntOr("REFRACTORY_MS", defaultRefractoryMs), "Refractory period in ms after each strike (env: REFRACTORY_MS)")
 		maxStrikesPerMin = flag.Int("max-strikes-per-min", envIntOr("MAX_STRIKES_PER_MIN", defaultMaxStrikesPerMin), "Rate limit: max strikes per minute before suppression (env: MAX_STRIKES_PER_MIN)")
+		minSfericMs      = flag.Float64("min-sferic-ms", envFloat64Or("MIN_SFERIC_MS", defaultMinSfericMs), "Minimum above-threshold duration in ms — 0.02 ≈ 1 sample (env: MIN_SFERIC_MS)")
+		maxSfericMs      = flag.Float64("max-sferic-ms", envFloat64Or("MAX_SFERIC_MS", defaultMaxSfericMs), "Maximum above-threshold duration in ms (env: MAX_SFERIC_MS)")
+		peakCheck        = flag.Bool("peak-check", envBoolOr("PEAK_CHECK", true), "Require the peak in the first half of the above-threshold window (env: PEAK_CHECK)")
+		warmupSecs       = flag.Int("warmup-seconds", envIntOr("WARMUP_SECONDS", defaultWarmupSeconds), "Noise floor settling time before the trigger arms (env: WARMUP_SECONDS)")
+		captureMs        = flag.Int("capture-ms", envIntOr("CAPTURE_MS", defaultCaptureMs), "Waveform capture window each side of the peak, in ms (env: CAPTURE_MS)")
 	)
 	flag.Parse()
 
@@ -81,6 +105,11 @@ func main() {
 	log.Printf("[main] Threshold ratio   : ×%.2f (%.1f dB)", *thresholdRatio, 20*math.Log10(*thresholdRatio))
 	log.Printf("[main] Refractory period : %d ms", *refractoryMs)
 	log.Printf("[main] Max strikes/min   : %d", *maxStrikesPerMin)
+	log.Printf("[main] Sferic duration   : %.3f–%.3f ms (%d–%d samples)",
+		*minSfericMs, *maxSfericMs, msToSamples(*minSfericMs), msToSamples(*maxSfericMs))
+	log.Printf("[main] Peak-position gate: %v", *peakCheck)
+	log.Printf("[main] Warm-up           : %d s", *warmupSecs)
+	log.Printf("[main] Capture window    : ±%d ms", *captureMs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -110,6 +139,11 @@ func main() {
 		ThresholdRatio:   *thresholdRatio,
 		RefractoryMs:     *refractoryMs,
 		MaxStrikesPerMin: *maxStrikesPerMin,
+		MinSfericMs:      *minSfericMs,
+		MaxSfericMs:      *maxSfericMs,
+		DisablePeakCheck: !*peakCheck,
+		WarmupSeconds:    *warmupSecs,
+		CaptureMs:        *captureMs,
 	}
 	det := NewLightningDetector(cfg, history, candidates, strikeOut, specAnalyser)
 

@@ -8,25 +8,74 @@ services:
       # UberSDR WebSocket URL
       UBERSDR_URL: "ws://ubersdr:8080/ws"
       #
+      # Every setting below is optional — uncomment to override the default.
+      # The Trigger Candidates panel in the web UI shows each threshold
+      # crossing and the reason it was accepted or rejected, which is the
+      # fastest way to see what a change actually did.
+      #
+      # ── Channel ────────────────────────────────────────────────────────────
+      #
       # IQ centre frequency in Hz (default: 25000 — covers 1–49 kHz VLF sferic band)
       # CENTRE_HZ: "25000"
       #
-      # IIR noise floor alpha (default: 0.9999 — ~2 s time constant at 48 kHz)
+      # Web UI port (default: 6097)
+      # WEB_PORT: "6097"
+      #
+      # ── Trigger threshold ──────────────────────────────────────────────────
+      #
+      # IIR noise floor alpha (default: 0.9999 — ~0.2 s time constant at 48 kHz).
+      # Higher = slower tracking. 0.99999 gives ~2 s, which holds the floor
+      # steadier between strikes during an active storm.
       # IIR_ALPHA: "0.9999"
       #
       # Trigger threshold ratio (default: 8.0 — 18 dB above noise floor).
       # Raise to 10–12 if false triggers persist in noisy RF environments.
+      # LOWER it (4–6) if strong VLF carriers in the passband inflate the
+      # broadband noise floor and only the closest strikes cross at all.
       # THRESHOLD_RATIO: "8.0"
       #
+      # Noise floor settling time in seconds before the trigger arms
+      # (default: 5). Prevents false triggers immediately after connection.
+      # WARMUP_SECONDS: "5"
+      #
+      # ── Sferic duration gates ──────────────────────────────────────────────
+      #
+      # How long the envelope may stay above threshold, in milliseconds.
+      #
+      # IMPORTANT: a sferic is impulsive. Seen through a 48 kHz channel its
+      # envelope is only ~1/48 kHz ≈ 21 µs wide — ONE sample. Measured
+      # candidates run 1–4 samples. The "sferics last 1–5 ms" figure is a
+      # narrowband measurement and does NOT apply here; a minimum built on it
+      # rejects every real strike. Hence the 0.02 ms (1 sample) default.
+      # The MAXIMUM is the gate that does useful work, rejecting anything
+      # sustained enough to be interference rather than an impulse.
+      # MIN_SFERIC_MS: "0.02"
+      # MAX_SFERIC_MS: "10"
+      #
+      # Single-peak validation (default: true): require the peak to fall in
+      # the first half of the above-threshold window, on the assumption of a
+      # fast rise and slow decay. Set false if genuine multi-peaked sferics
+      # are showing up as PEAK LATE in the candidate log.
+      # PEAK_CHECK: "true"
+      #
+      # ── Duplicate suppression ──────────────────────────────────────────────
+      #
       # Refractory period in ms after each confirmed strike (default: 100).
-      # Prevents burst interference from generating multiple events.
+      # Prevents burst interference from generating multiple events. NOTE:
+      # subsequent return strokes in one flash are typically 40–100 ms apart,
+      # so the default reports roughly one event per flash. Lower it to ~20
+      # to capture individual strokes instead.
       # REFRACTORY_MS: "100"
       #
       # Rate limit: max strikes per minute before suppression (default: 20).
+      # Raise for active storms — 20/min is one every 3 s.
       # MAX_STRIKES_PER_MIN: "20"
       #
-      # Web UI port (default: 6097)
-      # WEB_PORT: "6097"
+      # ── Waveform capture ───────────────────────────────────────────────────
+      #
+      # Envelope samples captured each side of the peak, in ms (default: 10).
+      # Larger windows cost ~7.5 KB per strike per 10 ms in the API payload.
+      # CAPTURE_MS: "10"
     networks:
       - sdr-network
     volumes:
